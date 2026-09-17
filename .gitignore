@@ -1,0 +1,16 @@
+# Local build and packaging outputs
+.xmake/
+**/.xmake/
+**/build/
+package/
+preview/
+
+# Generated game binaries and compiled scripts
+*.dll
+*.swf
+*.pex
+*.lib
+*.obj
+
+# Generated preview-only fallback images
+src/as3/aozora/favorites/fallback_icons/

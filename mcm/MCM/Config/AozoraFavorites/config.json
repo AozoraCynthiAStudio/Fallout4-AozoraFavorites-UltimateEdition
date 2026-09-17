@@ -1,0 +1,90 @@
+{
+  "modName": "AozoraFavorites",
+  "displayName": "青空的收藏菜单 · skyui like",
+  "minMcmVersion": 1,
+  "pluginRequirements": ["AozoraFavorites.esp"],
+  "content": [
+    { "type": "section", "text": "外观" },
+    {
+      "id": "bMascotEnabled:General",
+      "type": "switcher",
+      "text": "显示辐射娘",
+      "help": "关闭后隐藏辐射娘，只保留收藏菜单本体。",
+      "valueOptions": { "sourceType": "ModSettingBool", "default": true }
+    },
+    {
+      "id": "iThemeColorMode:General",
+      "type": "dropdown",
+      "text": "界面颜色来源",
+      "help": "跟随游戏 HUD 会读取当前 gameplay HUD color；预设配色提供稳定的手工选择。",
+      "valueOptions": {
+        "sourceType": "ModSettingInt",
+        "default": 0,
+        "options": ["跟随游戏 HUD", "预设配色"]
+      }
+    },
+    {
+      "id": "iThemeColorPreset:General",
+      "type": "dropdown",
+      "text": "预设配色",
+      "help": "仅在颜色来源选择预设配色时生效。",
+      "valueOptions": {
+        "sourceType": "ModSettingInt",
+        "default": 0,
+        "options": ["避难所绿", "琥珀终端", "冰霜青", "废土锈红", "兰紫", "冷白终端"]
+      }
+    },
+    { "type": "section", "text": "手柄十字键" },
+    {
+      "id": "iDPadUpAction:General",
+      "type": "dropdown",
+      "text": "上",
+      "help": "设置十字键上是否打开青空收藏。",
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["禁用", "青空收藏"] }
+    },
+    {
+      "id": "iDPadDownAction:General",
+      "type": "dropdown",
+      "text": "下",
+      "help": "设置十字键下是否打开青空收藏。",
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["禁用", "青空收藏"] }
+    },
+    {
+      "id": "iDPadLeftAction:General",
+      "type": "dropdown",
+      "text": "左",
+      "help": "设置十字键左是否打开青空收藏。",
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["禁用", "青空收藏"] }
+    },
+    {
+      "id": "iDPadRightAction:General",
+      "type": "dropdown",
+      "text": "右",
+      "help": "设置十字键右是否打开青空收藏。",
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["禁用", "青空收藏"] }
+    },
+    { "type": "section", "text": "收藏列表" },
+    {
+      "id": "bShowItemInnerName:General",
+      "type": "switcher",
+      "text": "显示武器/装备后缀",
+      "help": "显示名称中 | 后面的改造或内部标识，默认关闭。关闭只影响显示，不影响识别和切换。",
+      "valueOptions": { "sourceType": "ModSettingBool", "default": false }
+    },
+    {
+      "id": "iAllSortMode:General",
+      "type": "dropdown",
+      "text": "收藏排序",
+      "help": "选择按名称或使用频率排序。",
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 0, "options": ["名称", "使用频率"] }
+    },
+    { "type": "section", "text": "行为" },
+    {
+      "id": "fSlowMotionScale:General",
+      "type": "slider",
+      "text": "打开菜单时的时间速度",
+      "help": "0 为完全时停，0.5 为一半速度，1 为不改变时间。",
+      "valueOptions": { "sourceType": "ModSettingFloat", "default": 0, "min": 0, "max": 1, "step": 0.5 }
+    }
+  ]
+}
