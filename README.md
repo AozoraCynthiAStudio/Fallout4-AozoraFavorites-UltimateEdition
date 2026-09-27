@@ -1,35 +1,56 @@
-# Aozora Favorites · skyui like v1n
+# AozoraFavorites Ultimate Edition
 
-这是新的 UI 基线开发目录。`skyui like` 取代此前的双皮肤设备壳体路线，旧版 `SWF version` 保留为历史基线，不与本目录混用。
+### 青空收藏菜单 - 终极版
 
-## 当前方向
+**A SkyUI-style side favorites menu for Fallout 4, built to go beyond the vanilla 12-item favorites limit.**<br>
+**一款 SkyUI 风格的 Fallout 4 侧边收藏栏，突破原版最多 12 个收藏物品的限制。**
 
-- 侧边窄栏、左重标题、四个紧凑分类：全部 / 武器 / 衣服 / AID。
-- 主体由 AS3 动态绘制：面板、标题、分类、列标题、收藏行、快捷键框、数量列、滚动条和底部提示。
-- 辐射娘只作为右上角原色挂件；每次菜单会话随机选择一个系列，系列内十个状态只在真实选中项变化时推进。
-- 三张单色剪影作为低透明度背景装饰，由主题色染色。
-- UI 颜色支持跟随游戏 gameplay HUD color，或从五组预设中选择。
-- 布局保留 16:9 / 16:10 两套 INI 参数，并支持打开菜单期间实时重读布局。
+<p align="center">
+  <img src="docs/images/favorites-green-hud.png" alt="Aozora Favorites in game" width="820">
+</p>
 
-## 颜色预设
+## Highlights · 功能特色
 
-`iThemeColorMode=0` 跟随游戏 HUD；`1` 使用 `iThemeColorPreset`：
+- Browse All, Weapons, Outfits, and Aid in a compact side menu; see equipped status and equip, unequip, or use items directly.<br>
+  在紧凑的侧边菜单中浏览全部、武器、服装和 AID；查看装备状态，并直接装备、卸下或使用物品。
+- Press keyboard **Q** to add an item to favorites, then assign its hotkey in Aozora Favorites.<br>
+  使用键盘 **Q** 收藏物品，再在青空收藏菜单中为物品分配快捷键。
+- Number-key hotkey assignment in the vanilla Pip-Boy is disabled. Aozora-assigned number hotkeys remain usable during gameplay.<br>
+  原版哔哔小子中的数字键快捷键分配已禁用；在青空收藏菜单中分配的数字快捷键仍可在游戏中使用。
+- Gamepad navigation is supported. Configure a single D-pad direction to open the menu and set unused directions to **No Action**.<br>
+  支持手柄操作；可指定一个十字键方向打开菜单，并将其余方向设为**无操作**。
+- Uses FIS icons and category data when available, with a built-in fallback icon set when FIS is not installed. FIS is optional.<br>
+  检测到 FIS 时优先使用其图标和分类；未安装 FIS 时自动使用内置兜底图标。FIS 为可选组件。
+- The mascot can be hidden. When shown, one of five pose series is randomly selected each time the menu opens; changing focus switches poses within that same series.<br>
+  可以隐藏辐射娘；显示时，每次打开菜单都会随机选取五个系列之一，移动焦点时则在当前系列中切换姿势。
+- Match the HUD color or choose from six presets; sort all favorites by name or usage frequency, and choose how game time behaves while the menu is open.<br>
+  配色可跟随 HUD 或从六种预设中选择；全部收藏可按名称或使用频率排序，也可设置菜单打开时的游戏时间速度。
 
-0. Vault Green
-1. Amber Terminal
-2. Frost Cyan
-3. Wasteland Rust
-4. Orchid
+## Requirements · 前置要求
 
-选中框固定为琥珀黄，辐射娘不染色。
+- Fallout 4.<br>
+  Fallout 4（辐射 4）。
+- [Fallout 4 Script Extender (F4SE)](https://f4se.silverlock.org/) — install the release matching your Fallout 4 runtime.<br>
+  [Fallout 4 Script Extender (F4SE)](https://f4se.silverlock.org/)（辐射 4 脚本扩展器）——请安装与游戏运行时版本匹配的发行版。
+- [Address Library for F4SE Plugins](https://www.nexusmods.com/fallout4/mods/47327).<br>
+  [Address Library for F4SE Plugins](https://www.nexusmods.com/fallout4/mods/47327)（F4SE 插件地址库）。
+- [Mod Configuration Menu (MCM)](https://www.nexusmods.com/fallout4/mods/21497) for in-game settings.<br>
+  [Mod Configuration Menu (MCM)](https://www.nexusmods.com/fallout4/mods/21497)（模组配置菜单），用于游戏内设置。
+- The menu uses Fallout 4's vanilla SWF interface. No separate UI framework is required.<br>
+  菜单基于 Fallout 4 原版 SWF 界面，无需额外 UI 框架。
 
-## 构建
+## Installation · 安装
 
-```powershell
-& .\tools\build-skyui-like-assets.ps1
-& .\tools\build-swf.ps1 -FlexSdk 'Y:\Workspace\FO4青空的侧边收藏栏\SWF version\tools\vendor\flex-sdk'
-xmake build -y AozoraFavoritesSWF
-& .\tools\package-skyui-like-v1n.ps1
-```
+1. Install the requirements above, then install **AozoraFavorites Ultimate Edition** with your mod manager.<br>
+   安装以上前置，再使用模组管理器安装 **AozoraFavorites Ultimate Edition**。
+2. To use the Chinese interface, install **AozoraFavorites Ultimate Edition CHS Patch** after the English core mod so its translation file overwrites the original.<br>
+   使用中文界面时，请先安装英文核心版，再安装 **AozoraFavorites Ultimate Edition CHS Patch**，让汉化文件覆盖原翻译文件。
+3. The current Chinese patch replaces the English translation file; set the game's language to English (`sLanguage=en`) for it to load.<br>
+   当前汉化补丁覆盖的是英文翻译文件；请将游戏语言设为 English（`sLanguage=en`），以确保汉化生效。
 
-构建成功、包内容正确和游戏内行为必须分别记录。当前目录仅代表开发基线，尚未声称完成游戏内验证或 MO2 部署。
+## Build from source · 从源码构建
+
+- Build the SWF with `tools/bootstrap-flex.ps1` and `tools/build-swf.ps1`; build mascot and silhouette DDS files with `tools/build-skyui-like-assets.ps1` (requires DirectXTex `texconv`).<br>
+  使用 `tools/bootstrap-flex.ps1` 和 `tools/build-swf.ps1` 构建 SWF；使用 `tools/build-skyui-like-assets.ps1` 构建吉祥物与剪影 DDS（需要 DirectXTex 的 `texconv`）。
+- Build the native plugin with xmake and CommonLibF4; set `COMMONLIBF4_PATH` to your CommonLibF4 checkout. Then use `tools/package-formal-release-v1n.ps1` to assemble the installable packages.<br>
+  使用 xmake 和 CommonLibF4 构建原生插件；将 `COMMONLIBF4_PATH` 指向 CommonLibF4 源码目录，再运行 `tools/package-formal-release-v1n.ps1` 生成安装包。

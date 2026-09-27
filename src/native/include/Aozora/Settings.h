@@ -1,12 +1,21 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string_view>
 
 #include "RE/B/BS_BUTTON_CODE.h"
 
 namespace Aozora::SWF
 {
+    enum class LogLevel : std::uint8_t
+    {
+        Error = 0,
+        Warning = 1,
+        Info = 2,
+        Debug = 3
+    };
+
     inline constexpr std::size_t kMascotSeriesCount = 5;
 
     struct MascotLayoutSettings
@@ -163,6 +172,8 @@ namespace Aozora::SWF
     };
 
     float ReadSlowMotionScale();
+    int ReadLogLevel();
+    LogLevel ClassifyLogLevel(std::string_view a_message);
     int ReadAllSortMode();
     int ReadIconMode();
     bool ReadShowItemInnerName();

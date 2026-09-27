@@ -4,9 +4,11 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <intrin.h>
 #include <mutex>
 #include <optional>
 #include <regex>
@@ -18,6 +20,7 @@
 #include "RE/A/ActorEquipManager.h"
 #include "RE/B/BGSInventoryInterface.h"
 #include "RE/B/BGSInventoryList.h"
+#include "RE/B/BGSObjectInstance.h"
 #include "RE/B/BGSKeywordForm.h"
 #include "RE/B/BGSObjectInstanceExtra.h"
 #include "RE/E/ExtraFavorite.h"
@@ -28,6 +31,7 @@
 #include "RE/U/UI.h"
 #include "RE/U/UIMessageQueue.h"
 #include "RE/U/UI_MESSAGE_TYPE.h"
+#include "RE/U/UIUtils.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -47,6 +51,7 @@ namespace Aozora::SWF
         constexpr std::uint32_t USAGE_RECORD_VERSION = 1;
         constexpr std::uint32_t FAVORITES_V2_RECORD = 'FAV2';
         constexpr std::uint32_t FAVORITES_V2_RECORD_VERSION = 2;
+        using DrinkPotion_t = bool (*)(RE::Actor*, RE::AlchemyItem*, std::uint32_t);
 
         struct Identity
         {
@@ -492,16 +497,218 @@ namespace Aozora::SWF
         bool g_weaponSwitchEquipIssued{ false };
         bool g_weaponSwitchDrawRequested{ false };
         bool g_weaponSwitchUnequip{ false };
+        bool g_weaponSwitchBeforeDrawn{ false };
+        bool g_weaponSwitchHolsterRequired{ false };
+        bool g_weaponSwitchHolsterRequested{ false };
         bool g_weaponSwitchUnequipIssued{ false };
         bool g_weaponSwitchRawResult{ false };
+        constexpr std::uint32_t MAX_WEAPON_SWITCH_ATTEMPTS = 60;
+        DrinkPotion_t g_originalDrinkPotion{ nullptr };
+        bool g_alchemyActionTraceHookInstalled{ false };
+        thread_local bool g_aozoraAlchemyCall{ false };
+        using EquipObject_t = bool (*)(
+            RE::ActorEquipManager*,
+            RE::Actor*,
+            const RE::BGSObjectInstance&,
+            std::uint32_t,
+            std::uint32_t,
+            const RE::BGSEquipSlot*,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool);
+        EquipObject_t g_originalAlchemyEquipObject{ nullptr };
+        bool g_alchemyEquipTraceHookInstalled{ false };
 
         void Log(std::string_view a_message)
         {
+            if (static_cast<std::uint8_t>(ClassifyLogLevel(a_message)) >
+                static_cast<std::uint8_t>(ReadLogLevel())) {
+                return;
+            }
             REX::INFO("[AozoraFavoritesSWF] {}", a_message);
             std::ofstream file("Data/F4SE/Plugins/AozoraFavoritesSWF.log", std::ios::app);
             if (file.is_open()) {
                 file << '[' << GetTickCount64() << "] STORE " << a_message << '\n';
             }
+        }
+
+        void PlayFavoriteActionFeedback(std::string_view a_action)
+        {
+            RE::UIUtils::PlayMenuSound("UIMenuOK");
+            Log("FAVORITE_ACTION_FEEDBACK sound=UIMenuOK action=" + std::string(a_action));
+        }
+
+        std::string FormatAddress(std::uintptr_t a_address)
+        {
+            char buffer[32]{};
+            std::snprintf(buffer, sizeof(buffer), "0x%llX",
+                static_cast<unsigned long long>(a_address));
+            return buffer;
+        }
+
+        std::string ModuleAndOffset(std::uintptr_t a_address)
+        {
+            if (!a_address) {
+                return "null";
+            }
+            HMODULE module = nullptr;
+            if (!GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCSTR>(a_address), &module) ||
+                !module) {
+                return FormatAddress(a_address);
+            }
+            char path[MAX_PATH]{};
+            const auto length = GetModuleFileNameA(module, path, MAX_PATH);
+            std::string moduleName = length ? std::string(path, length) : "unknown-module";
+            if (const auto separator = moduleName.find_last_of("\\/");
+                separator != std::string::npos) {
+                moduleName.erase(0, separator + 1);
+            }
+            const auto moduleBase = reinterpret_cast<std::uintptr_t>(module);
+            const auto offset = a_address >= moduleBase ? a_address - moduleBase : 0;
+            return moduleName + "+" + FormatAddress(offset) + "@" + FormatAddress(a_address);
+        }
+
+        std::string FunctionRange(std::uintptr_t a_address)
+        {
+            if (!a_address) {
+                return "null";
+            }
+            DWORD64 imageBase = 0;
+            const auto* runtimeFunction = RtlLookupFunctionEntry(
+                static_cast<DWORD64>(a_address), &imageBase, nullptr);
+            if (!runtimeFunction) {
+                return ModuleAndOffset(a_address) + "[no-unwind-entry]";
+            }
+            const auto begin = static_cast<std::uintptr_t>(imageBase) + runtimeFunction->BeginAddress;
+            const auto end = static_cast<std::uintptr_t>(imageBase) + runtimeFunction->EndAddress;
+            return ModuleAndOffset(begin) + ".." + ModuleAndOffset(end);
+        }
+
+        std::string CodeBytes(std::uintptr_t a_address, std::size_t a_before, std::size_t a_after)
+        {
+            if (!a_address) {
+                return "null";
+            }
+            const auto start = a_address >= a_before ? a_address - a_before : a_address;
+            const auto length = a_address >= a_before ? a_before + a_after : a_after;
+            MEMORY_BASIC_INFORMATION memory{};
+            if (!VirtualQuery(reinterpret_cast<const void*>(start), &memory, sizeof(memory)) ||
+                memory.State != MEM_COMMIT ||
+                (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                return "unreadable";
+            }
+            const auto regionEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+            if (start > regionEnd || length > regionEnd - start) {
+                return "unreadable";
+            }
+            std::string result;
+            result.reserve(length * 3);
+            for (std::size_t index = 0; index < length; ++index) {
+                char byte[4]{};
+                std::snprintf(byte, sizeof(byte), "%02X",
+                    *reinterpret_cast<const std::uint8_t*>(start + index));
+                if (!result.empty()) {
+                    result.push_back(' ');
+                }
+                result += byte;
+            }
+            return result;
+        }
+
+        void LogAlchemyCallChain(std::uintptr_t a_returnAddress)
+        {
+            void* frames[12]{};
+            const auto frameCount = CaptureStackBackTrace(2, 12, frames, nullptr);
+            Log("ALCH_ACTION_CALLER returnAddress=" + FormatAddress(a_returnAddress) +
+                " callerFunction=" + ModuleAndOffset(a_returnAddress) +
+                " callerFunctionRange=" + FunctionRange(a_returnAddress) +
+                " callsiteBytes=" + CodeBytes(a_returnAddress, 16, 8) +
+                " upstreamReturnAddress=" +
+                (frameCount > 1 ? ModuleAndOffset(reinterpret_cast<std::uintptr_t>(frames[1])) : "null") +
+                " upstreamFunctionRange=" +
+                (frameCount > 1 ? FunctionRange(reinterpret_cast<std::uintptr_t>(frames[1])) : "null"));
+            for (USHORT index = 0; index < frameCount; ++index) {
+                const auto address = reinterpret_cast<std::uintptr_t>(frames[index]);
+                Log("ALCH_ACTION_CALLSTACK index=" + std::to_string(index) +
+                    " address=" + FormatAddress(address) +
+                    " function=" + ModuleAndOffset(address) +
+                    " callerBytes=" + CodeBytes(address, 16, 8));
+            }
+        }
+
+        bool DrinkPotionTraceHook(
+            RE::Actor* a_actor,
+            RE::AlchemyItem* a_potion,
+            std::uint32_t a_stackID)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool isPlayer = player && a_actor == static_cast<RE::Actor*>(player);
+            const bool isAozora = g_aozoraAlchemyCall;
+            const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+            Log("ALCH_DRINK_POTION_BEGIN caller=" + std::string(isAozora ? "Aozora" : "external") +
+                " formID=" + std::to_string(a_potion ? a_potion->GetFormID() : 0) +
+                " stackID=" + std::to_string(a_stackID));
+            LogAlchemyCallChain(caller);
+            Log("ALCH_ACTION_PIPELINE caller=" + std::string(isAozora ? "Aozora" : "external") +
+                " nativeFunction=Actor::DrinkPotion form=" +
+                std::to_string(a_potion ? a_potion->GetFormID() : 0) +
+                " stackID=" + std::to_string(a_stackID) +
+                " actor=" + std::string(isPlayer ? "player" : "other") +
+                " returnAddress=0x" + std::to_string(caller));
+            const bool result = g_originalDrinkPotion ?
+                g_originalDrinkPotion(a_actor, a_potion, a_stackID) : false;
+            Log("ALCH_ACTION_PIPELINE caller=" + std::string(isAozora ? "Aozora" : "external") +
+                " nativeFunction=Actor::DrinkPotion result=" +
+                std::to_string(result ? 1 : 0));
+            Log("ALCH_DRINK_POTION_END caller=" + std::string(isAozora ? "Aozora" : "external") +
+                " formID=" + std::to_string(a_potion ? a_potion->GetFormID() : 0) +
+                " result=" + std::to_string(result ? 1 : 0));
+            return result;
+        }
+
+        bool AlchemyEquipObjectTraceHook(
+            RE::ActorEquipManager* a_manager,
+            RE::Actor* a_actor,
+            const RE::BGSObjectInstance& a_object,
+            std::uint32_t a_stackID,
+            std::uint32_t a_number,
+            const RE::BGSEquipSlot* a_equipSlot,
+            bool a_queueEquip,
+            bool a_forceEquip,
+            bool a_playSounds,
+            bool a_applyNow,
+            bool a_locked)
+        {
+            const auto returnAddress = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+            auto* object = a_object.object ? a_object.object->As<RE::TESBoundObject>() : nullptr;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool isPlayer = player && a_actor == static_cast<RE::Actor*>(player);
+            Log("ALCH_NATIVE_USE_TRACE_BEGIN nativeFunction=ActorEquipManager::EquipObject"
+                " actor=" + FormatAddress(reinterpret_cast<std::uintptr_t>(a_actor)) +
+                " actorIsPlayer=" + std::to_string(isPlayer ? 1 : 0) +
+                " objectFormID=" + std::to_string(object ? object->GetFormID() : 0) +
+                " formType=" + std::string(object ? object->GetFormTypeString() : "null") +
+                " stackID=" + std::to_string(a_stackID) +
+                " number=" + std::to_string(a_number) +
+                " equipSlot=" + FormatAddress(reinterpret_cast<std::uintptr_t>(a_equipSlot)) +
+                " queueEquip=" + std::to_string(a_queueEquip ? 1 : 0) +
+                " forceEquip=" + std::to_string(a_forceEquip ? 1 : 0) +
+                " playSounds=" + std::to_string(a_playSounds ? 1 : 0) +
+                " applyNow=" + std::to_string(a_applyNow ? 1 : 0) +
+                " locked=" + std::to_string(a_locked ? 1 : 0) +
+                " caller=" + ModuleAndOffset(returnAddress) +
+                " returnAddress=" + FormatAddress(returnAddress));
+            const bool result = g_originalAlchemyEquipObject ?
+                g_originalAlchemyEquipObject(a_manager, a_actor, a_object, a_stackID, a_number,
+                    a_equipSlot, a_queueEquip, a_forceEquip, a_playSounds, a_applyNow, a_locked) : false;
+            Log("ALCH_NATIVE_USE_TRACE_END nativeFunction=ActorEquipManager::EquipObject result=" +
+                std::to_string(result ? 1 : 0));
+            return result;
         }
 
         void ExtendInternalFavoriteUpdate(std::uint64_t a_durationMs = 1000)
@@ -617,6 +824,44 @@ namespace Aozora::SWF
             return count;
         }
 
+        bool IsWeaponDrawn(RE::PlayerCharacter* a_player)
+        {
+            return a_player && a_player->weaponState == RE::WEAPON_STATE::kDrawn;
+        }
+
+        bool IsWeaponDrawnOrSheathing(RE::PlayerCharacter* a_player)
+        {
+            if (!a_player) {
+                return false;
+            }
+            return a_player->weaponState == RE::WEAPON_STATE::kDrawn ||
+                a_player->weaponState == RE::WEAPON_STATE::kWantToSheathe ||
+                a_player->weaponState == RE::WEAPON_STATE::kSheathing;
+        }
+
+        const char* WeaponStateName(RE::PlayerCharacter* a_player)
+        {
+            if (!a_player) {
+                return "Missing";
+            }
+            switch (a_player->weaponState) {
+            case RE::WEAPON_STATE::kSheathed:
+                return "Sheathed";
+            case RE::WEAPON_STATE::kWantToDraw:
+                return "WantToDraw";
+            case RE::WEAPON_STATE::kDrawing:
+                return "Drawing";
+            case RE::WEAPON_STATE::kDrawn:
+                return "Drawn";
+            case RE::WEAPON_STATE::kWantToSheathe:
+                return "WantToSheathe";
+            case RE::WEAPON_STATE::kSheathing:
+                return "Sheathing";
+            default:
+                return "Unknown";
+            }
+        }
+
         bool IsEquippedForIdentity(RE::TESBoundObject* a_object, std::uint64_t a_instanceKey,
             bool a_uniqueFavoriteForForm)
         {
@@ -719,6 +964,9 @@ namespace Aozora::SWF
             Log("weapon equip request form=" + std::to_string(a_object->GetFormID()) +
                 " stack=" + std::to_string(selected.stackID) +
                 " result=" + std::to_string(result ? 1 : 0));
+            Log("WEAPON_ACTION equipRequested=1 holsterRequested=0 drawRequested=0"
+                " state=" + std::string(WeaponStateName(player)) +
+                " result=" + std::to_string(result ? 1 : 0));
             return result;
         }
 
@@ -731,7 +979,11 @@ namespace Aozora::SWF
             const auto instanceKey = g_weaponSwitchFavorite.instanceKey;
             const bool shouldBeEquipped = !g_weaponSwitchUnequip;
             const bool afterEquipped = IsTargetEquipped(formID, instanceKey);
-            const bool success = afterEquipped == shouldBeEquipped;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool afterDrawn = IsWeaponDrawn(player);
+            const bool success = shouldBeEquipped ?
+                (afterEquipped && afterDrawn) :
+                (!afterEquipped && !afterDrawn);
             const auto inventoryCount = InventoryCountForForm(
                 RE::TESForm::GetFormByID<RE::TESBoundObject>(formID));
             if (success) {
@@ -740,15 +992,23 @@ namespace Aozora::SWF
             Log("FAVORITE_ACTION_COMPLETE form=" + std::to_string(formID) +
                 " action=" + (shouldBeEquipped ? "EquipWeapon" : "UnequipWeapon") +
                 " rawResult=" + std::to_string(g_weaponSwitchRawResult ? 1 : 0) +
+                " beforeEquipped=" + std::to_string((!g_weaponSwitchUnequip) ? 0 : 1) +
+                " beforeDrawn=" + std::to_string(g_weaponSwitchBeforeDrawn ? 1 : 0) +
                 " afterEquipped=" + std::to_string(afterEquipped ? 1 : 0) +
+                " afterDrawn=" + std::to_string(afterDrawn ? 1 : 0) +
+                " weaponState=" + WeaponStateName(player) +
                 " inventoryCountAfter=" + std::to_string(inventoryCount) +
                 " success=" + std::to_string(success ? 1 : 0));
             g_weaponSwitchActive = false;
             g_weaponSwitchEquipIssued = false;
             g_weaponSwitchDrawRequested = false;
             g_weaponSwitchUnequip = false;
+            g_weaponSwitchBeforeDrawn = false;
+            g_weaponSwitchHolsterRequired = false;
+            g_weaponSwitchHolsterRequested = false;
             g_weaponSwitchUnequipIssued = false;
             Log("weapon switch finished postEquipped=" + std::to_string(afterEquipped ? 1 : 0) +
+                " postDrawn=" + std::to_string(afterDrawn ? 1 : 0) +
                 " success=" + std::to_string(success ? 1 : 0));
             FavoritesMenu::RefreshSnapshotIfOpen();
         }
@@ -767,6 +1027,32 @@ namespace Aozora::SWF
                 return;
             }
             if (g_weaponSwitchUnequip) {
+                if (g_weaponSwitchHolsterRequired) {
+                    const auto state = player->weaponState;
+                    if (state == RE::WEAPON_STATE::kSheathed) {
+                        g_weaponSwitchHolsterRequired = false;
+                    } else {
+                        // A drawn equipped weapon must be put away before its
+                        // inventory stack is unequipped. Calling UnequipObject
+                        // first can silently remove the weapon while it is
+                        // still in the player's hands.
+                        if ((!g_weaponSwitchHolsterRequested || a_attempt % 4 == 0) &&
+                            state != RE::WEAPON_STATE::kWantToSheathe &&
+                            state != RE::WEAPON_STATE::kSheathing) {
+                            const bool result = player->SetWeaponState(RE::WEAPON_STATE::kWantToSheathe);
+                            g_weaponSwitchHolsterRequested = true;
+                            Log("WEAPON_ACTION equipRequested=0 holsterRequested=1 drawRequested=0"
+                                " state=" + std::string(WeaponStateName(player)) +
+                                " result=" + std::to_string(result ? 1 : 0));
+                        }
+                        if (a_attempt < MAX_WEAPON_SWITCH_ATTEMPTS) {
+                            ScheduleWeaponSwitch(a_serial, a_attempt + 1);
+                        } else {
+                            FinishWeaponSwitch(a_serial, false);
+                        }
+                        return;
+                    }
+                }
                 if (!IsTargetEquipped(g_weaponSwitchFavorite.formID, g_weaponSwitchFavorite.instanceKey)) {
                     FinishWeaponSwitch(a_serial, true);
                     return;
@@ -788,6 +1074,9 @@ namespace Aozora::SWF
                             std::to_string(object->GetFormID()) +
                             " stack=" + std::to_string(selected.stackID) +
                             " result=" + std::to_string(result ? 1 : 0));
+                        Log("WEAPON_ACTION equipRequested=0 holsterRequested=0 drawRequested=0"
+                            " state=" + std::string(WeaponStateName(player)) +
+                            " result=" + std::to_string(result ? 1 : 0));
                         g_weaponSwitchRawResult = result;
                         // The request was issued even when the engine returns
                         // false; the post-state decides whether it worked.
@@ -801,25 +1090,20 @@ namespace Aozora::SWF
                     FinishWeaponSwitch(a_serial, true);
                     return;
                 }
-                if (a_attempt < 30) {
+                if (a_attempt < MAX_WEAPON_SWITCH_ATTEMPTS) {
                     ScheduleWeaponSwitch(a_serial, a_attempt + 1);
                 } else {
                     FinishWeaponSwitch(a_serial, false);
                 }
                 return;
             }
-            if (!g_weaponSwitchEquipIssued) {
-                if (!IsTargetEquipped(g_weaponSwitchFavorite.formID, g_weaponSwitchFavorite.instanceKey)) {
+            const bool targetEquipped = IsTargetEquipped(
+                g_weaponSwitchFavorite.formID, g_weaponSwitchFavorite.instanceKey);
+            if (!g_weaponSwitchEquipIssued ||
+                (!targetEquipped && a_attempt != 0 && a_attempt % 4 == 0)) {
+                if (!targetEquipped) {
                     const bool rawResult = EquipWeaponDirectOnce(object, g_weaponSwitchFavorite.instanceKey);
                     g_weaponSwitchRawResult = rawResult;
-                    if (!rawResult) {
-                        if (a_attempt < 30) {
-                            ScheduleWeaponSwitch(a_serial, a_attempt + 1);
-                        } else {
-                            FinishWeaponSwitch(a_serial, false);
-                        }
-                        return;
-                    }
                 }
                 g_weaponSwitchEquipIssued = true;
             }
@@ -837,7 +1121,7 @@ namespace Aozora::SWF
                     FinishWeaponSwitch(a_serial, false);
                     return;
                 }
-                if (a_attempt < 30) {
+                if (a_attempt < MAX_WEAPON_SWITCH_ATTEMPTS) {
                     ScheduleWeaponSwitch(a_serial, a_attempt + 1);
                 } else {
                     FinishWeaponSwitch(a_serial, false);
@@ -845,20 +1129,34 @@ namespace Aozora::SWF
                 return;
             }
 
-            if (player->weaponState == RE::WEAPON_STATE::kDrawn) {
+            if (IsWeaponDrawn(player)) {
                 FinishWeaponSwitch(a_serial, true);
                 return;
             }
-            if (player->weaponState == RE::WEAPON_STATE::kSheathed &&
-                (!g_weaponSwitchDrawRequested || a_attempt % 4 == 0)) {
-                if (!g_weaponSwitchDrawRequested && player->currentProcess) {
-                    player->currentProcess->RequestLoadAnimationsForWeaponChange(*player);
+            const auto state = player->weaponState;
+            if (state == RE::WEAPON_STATE::kSheathed) {
+                if (!g_weaponSwitchDrawRequested || a_attempt % 4 == 0) {
+                    if (!g_weaponSwitchDrawRequested && player->currentProcess) {
+                        player->currentProcess->RequestLoadAnimationsForWeaponChange(*player);
+                    }
+                    const bool result = player->SetWeaponState(RE::WEAPON_STATE::kWantToDraw);
+                    g_weaponSwitchDrawRequested = true;
+                    Log("WEAPON_ACTION equipRequested=1 holsterRequested=0 drawRequested=1"
+                        " state=" + std::string(WeaponStateName(player)) +
+                        " result=" + std::to_string(result ? 1 : 0));
                 }
-                g_weaponSwitchDrawRequested = true;
-                player->SetWeaponState(RE::WEAPON_STATE::kWantToDraw);
-                Log("weapon draw requested form=" + std::to_string(object->GetFormID()));
+            } else if (state == RE::WEAPON_STATE::kWantToSheathe ||
+                state == RE::WEAPON_STATE::kSheathing) {
+                // A previous sheathe transition can still be finishing when
+                // EquipObject accepts the new weapon. Wait for kSheathed,
+                // then issue a real draw request.
+                if (a_attempt % 4 == 0) {
+                    Log("WEAPON_ACTION equipRequested=1 holsterRequested=0 drawRequested=0"
+                        " state=" + std::string(WeaponStateName(player)) +
+                        " result=0 reason=waiting-for-sheathed");
+                }
             }
-            if (a_attempt < 30) {
+            if (a_attempt < MAX_WEAPON_SWITCH_ATTEMPTS) {
                 ScheduleWeaponSwitch(a_serial, a_attempt + 1);
             } else {
                 FinishWeaponSwitch(a_serial, false);
@@ -891,8 +1189,16 @@ namespace Aozora::SWF
             g_weaponSwitchEquipIssued = false;
             g_weaponSwitchDrawRequested = false;
             g_weaponSwitchUnequip = IsTargetEquipped(a_formID, a_instanceKey);
+            g_weaponSwitchBeforeDrawn = IsWeaponDrawnOrSheathing(player);
+            g_weaponSwitchHolsterRequired = g_weaponSwitchUnequip && g_weaponSwitchBeforeDrawn;
+            g_weaponSwitchHolsterRequested = false;
             g_weaponSwitchUnequipIssued = false;
             g_weaponSwitchRawResult = false;
+            Log("WEAPON_ACTION start form=" + std::to_string(a_formID) +
+                " equipRequested=0 holsterRequested=0 drawRequested=0"
+                " beforeEquipped=" + std::to_string(g_weaponSwitchUnequip ? 1 : 0) +
+                " beforeDrawn=" + std::to_string(g_weaponSwitchBeforeDrawn ? 1 : 0) +
+                " state=" + std::string(WeaponStateName(player)));
             ScheduleWeaponSwitch(g_weaponSwitchSerial, 0);
             return true;
         }
@@ -981,7 +1287,12 @@ namespace Aozora::SWF
             }
             Log("FAVORITE_ACTION_COMPLETE form=" + std::to_string(a_formID) +
                 " action=ConsumeAlchemy rawResult=" + std::to_string(a_rawResult ? 1 : 0) +
+                " inventoryCountBefore=" + std::to_string(a_beforeCount) +
                 " inventoryCountAfter=" + std::to_string(afterCount) +
+                " success=" + std::to_string(success ? 1 : 0));
+            Log("ALCH_ACTION_COMPLETE form=" + std::to_string(a_formID) +
+                " effect=unknown consumed=" + std::to_string(success ? 1 : 0) +
+                " animationTrace=not_tracked soundTrace=not_tracked"
                 " success=" + std::to_string(success ? 1 : 0));
             if (success) {
                 ++g_useCounts[a_formID];
@@ -1006,24 +1317,24 @@ namespace Aozora::SWF
                     return name;
                 }
             }
-            return a_item.object ? a_item.object->GetFormTypeString() : "Unknown";
+            return {};
         }
 
         std::string TypeFor(RE::TESForm* a_form)
         {
             if (!a_form) {
-                return "物品";
+                return "OTHER";
             }
             if (a_form->Is(RE::ENUM_FORM_ID::kWEAP)) {
-                return "武器";
+                return "WEAP";
             }
             if (a_form->Is(RE::ENUM_FORM_ID::kARMO)) {
-                return "服装";
+                return "ARMO";
             }
             if (a_form->Is(RE::ENUM_FORM_ID::kALCH)) {
-                return "药品";
+                return "ALCH";
             }
-            return "物品";
+            return "OTHER";
         }
 
         std::string FallbackIconCategory(RE::TESBoundObject* a_object,
@@ -1834,6 +2145,71 @@ namespace Aozora::SWF
         }
     }
 
+    void InstallAlchemyActionTraceHook()
+    {
+        if (g_alchemyActionTraceHookInstalled) {
+            return;
+        }
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            Log("ALCH_ACTION_TRACE hook pending reason=player-missing");
+            return;
+        }
+        auto* vtableAddress = *reinterpret_cast<std::uintptr_t**>(static_cast<RE::Actor*>(player));
+        if (!vtableAddress) {
+            Log("ALCH_ACTION_TRACE hook failed reason=vtable-missing");
+            return;
+        }
+        try {
+            REL::Relocation<std::uintptr_t> vtable{ reinterpret_cast<std::uintptr_t>(vtableAddress) };
+            g_originalDrinkPotion = reinterpret_cast<DrinkPotion_t>(
+                vtable.write_vfunc(0x119, DrinkPotionTraceHook));
+            g_alchemyActionTraceHookInstalled = g_originalDrinkPotion != nullptr;
+            Log(g_alchemyActionTraceHookInstalled ?
+                "ALCH_ACTION_TRACE hook installed vfunc=0x119 name=Actor::DrinkPotion" :
+                "ALCH_ACTION_TRACE hook failed reason=original-null");
+        } catch (...) {
+            g_originalDrinkPotion = nullptr;
+            Log("ALCH_ACTION_TRACE hook failed reason=exception");
+        }
+    }
+
+    void InstallAlchemyEquipTraceHook()
+    {
+        if (g_alchemyEquipTraceHookInstalled) {
+            return;
+        }
+        if (!REX::FModule::IsRuntimeOG()) {
+            Log("ALCH_NATIVE_USE_TRACE hook skipped reason=runtime-not-1.10.163");
+            return;
+        }
+        const auto trampolineFree = REL::GetTrampoline().free_size();
+        if (trampolineFree < 14) {
+            Log("ALCH_NATIVE_USE_TRACE hook skipped reason=trampoline-unavailable free=" +
+                std::to_string(trampolineFree));
+            return;
+        }
+        try {
+            // The callsite is the exact Pip-Boy preparation call observed in
+            // the runtime stack: E1CB59 -> ActorEquipManager::EquipObject.
+            // Hooking this callsite keeps unrelated EquipObject calls intact.
+            REL::Relocation<std::uintptr_t> callsite{ REL::Offset{ 0xE1CB59 } };
+            g_originalAlchemyEquipObject = reinterpret_cast<EquipObject_t>(
+                callsite.write_call<5>(AlchemyEquipObjectTraceHook));
+            const auto expected = REL::Relocation<std::uintptr_t>{
+                RE::ID::ActorEquipManager::EquipObject }.address();
+            g_alchemyEquipTraceHookInstalled = g_originalAlchemyEquipObject != nullptr;
+            Log("ALCH_NATIVE_USE_TRACE hook " +
+                std::string(g_alchemyEquipTraceHookInstalled ? "installed" : "failed") +
+                " runtime=1.10.163 callsite=0xE1CB59 target=" +
+                FormatAddress(reinterpret_cast<std::uintptr_t>(g_originalAlchemyEquipObject)) +
+                " expected=" + FormatAddress(expected));
+        } catch (...) {
+            g_originalAlchemyEquipObject = nullptr;
+            Log("ALCH_NATIVE_USE_TRACE hook failed reason=exception");
+        }
+    }
+
     void InitializeStore()
     {
         std::lock_guard lock(g_mutex);
@@ -1906,7 +2282,7 @@ namespace Aozora::SWF
             entry.hotkeySlot = stored.hotkeySlot;
             entry.type = TypeFor(object);
             entry.name = object->As<RE::TESFullName>() && object->As<RE::TESFullName>()->GetFullName() ?
-                object->As<RE::TESFullName>()->GetFullName() : "Unknown";
+                object->As<RE::TESFullName>()->GetFullName() : "";
             auto selected = FindInventoryStack(object, stored.instanceKey);
             if (selected.item && selected.stack) {
                 entry.name = NameFor(*selected.item, selected.stackID);
@@ -2165,6 +2541,8 @@ namespace Aozora::SWF
             object->Is(RE::ENUM_FORM_ID::kARMO);
         const bool beforeEquipped = isEquipment ?
             IsTargetEquipped(a_formID, stored->instanceKey) : false;
+        const bool beforeDrawn = object->Is(RE::ENUM_FORM_ID::kWEAP) ?
+            IsWeaponDrawnOrSheathing(player) : false;
         const std::string formType = object->Is(RE::ENUM_FORM_ID::kWEAP) ? "WEAP" :
             (object->Is(RE::ENUM_FORM_ID::kARMO) ? "ARMO" :
                 (object->Is(RE::ENUM_FORM_ID::kALCH) ? "ALCH" : "OTHER"));
@@ -2177,8 +2555,10 @@ namespace Aozora::SWF
                 " formType=" + formType +
                 " action=" + action +
                 " beforeEquipped=" + std::to_string(beforeEquipped ? 1 : 0) +
+                " beforeDrawn=" + std::to_string(beforeDrawn ? 1 : 0) +
                 " inventoryCount=" + std::to_string(inventoryCount));
             if (StartWeaponSwitch(a_formID, stored->instanceKey)) {
+                PlayFavoriteActionFeedback(action);
                 Log("FAVORITE_ACTION accepted=1 form=" + std::to_string(a_formID) +
                     " action=" + action);
                 return true;
@@ -2212,6 +2592,7 @@ namespace Aozora::SWF
             Log("FAVORITE_ACTION accepted=1 form=" + std::to_string(a_formID) +
                 " action=" + action +
                 " rawResult=" + std::to_string(rawResult ? 1 : 0));
+            PlayFavoriteActionFeedback(action);
             ScheduleArmorActionVerification(
                 a_formID, stored->instanceKey, !beforeEquipped, rawResult, 0);
             return true;
@@ -2230,11 +2611,54 @@ namespace Aozora::SWF
                 " instanceKey=" + std::to_string(stored->instanceKey) +
                 " formType=ALCH action=ConsumeAlchemy beforeEquipped=0 inventoryCount=" +
                 std::to_string(inventoryCount));
-            const bool rawResult = player->DrinkPotion(alchemy, selected.stackID);
-            Log("FAVORITE_ACTION accepted=1 form=" + std::to_string(a_formID) +
+            Log("ALCH_ACTION_BEGIN form=" + std::to_string(a_formID) +
+                " source=" + std::string(a_source) +
+                " method=ActorEquipManager::EquipObject stackID=" + std::to_string(selected.stackID));
+            auto* equipManager = RE::ActorEquipManager::GetSingleton();
+            bool rawResult = false;
+            if (equipManager) {
+                RE::BGSObjectInstance instance(object, selected.item->GetInstanceData(selected.stackID));
+                Log("ALCH_EQUIP_OBJECT_BEGIN formID=" + std::to_string(a_formID) +
+                    " stackID=" + std::to_string(selected.stackID) +
+                    " number=1 equipSlot=0 queueEquip=0 forceEquip=0 playSounds=1"
+                    " applyNow=0 locked=0");
+                const bool previousAlchemyContext = g_aozoraAlchemyCall;
+                g_aozoraAlchemyCall = true;
+                rawResult = equipManager->EquipObject(
+                    player, instance, selected.stackID, 1, nullptr,
+                    false, false, true, false, false);
+                g_aozoraAlchemyCall = previousAlchemyContext;
+                Log("ALCH_EQUIP_OBJECT_END formID=" + std::to_string(a_formID) +
+                    " result=" + std::to_string(rawResult ? 1 : 0));
+            } else {
+                Log("ALCH_EQUIP_OBJECT_END formID=" + std::to_string(a_formID) +
+                    " result=0 reason=equip-manager-missing");
+            }
+
+            // EquipObject normally owns the complete native ALCH use path and
+            // calls DrinkPotion internally. Only fall back when it rejected
+            // the request and the inventory count is still unchanged, so a
+            // delayed successful native consume cannot be double-applied.
+            if (!rawResult && InventoryCountForForm(object) >= inventoryCount) {
+                Log("WARNING ALCH_ACTION_FALLBACK formID=" + std::to_string(a_formID) +
+                    " reason=equip-object-failed fallbackMethod=Actor::DrinkPotion");
+                const bool previousAlchemyContext = g_aozoraAlchemyCall;
+                g_aozoraAlchemyCall = true;
+                rawResult = player->DrinkPotion(alchemy, selected.stackID);
+                g_aozoraAlchemyCall = previousAlchemyContext;
+            } else if (!rawResult) {
+                Log("ALCH_ACTION_FALLBACK skipped formID=" + std::to_string(a_formID) +
+                    " reason=consume-already-observed");
+                rawResult = true;
+            }
+            Log("FAVORITE_ACTION accepted=" + std::to_string(rawResult ? 1 : 0) +
+                " form=" + std::to_string(a_formID) +
                 " action=ConsumeAlchemy rawResult=" + std::to_string(rawResult ? 1 : 0));
+            if (rawResult) {
+                PlayFavoriteActionFeedback("ConsumeAlchemy");
+            }
             CompleteAlchemyAction(a_formID, stored->instanceKey, inventoryCount, rawResult, 0);
-            return true;
+            return rawResult;
         }
 
         Log("FAVORITE_ACTION source=" + std::string(a_source) +

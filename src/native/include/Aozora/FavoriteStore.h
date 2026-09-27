@@ -28,6 +28,8 @@ namespace Aozora::SWF
     std::vector<FavoriteSnapshotEntry> Snapshot();
     void RegisterFavoriteChangeSink();
     void ClearVanillaFavorites();
+    void InstallAlchemyActionTraceHook();
+    void InstallAlchemyEquipTraceHook();
 
     bool AddFavorite(std::uint32_t a_formID, std::uint64_t a_instanceKey = 0,
         std::uint32_t a_hotkeySlot = 0xFFFFFFFFu);

@@ -106,6 +106,8 @@ namespace
             Aozora::SWF::FavoritesMenu::Register();
             Aozora::SWF::FavoritesMenu::RegisterInput();
             Aozora::SWF::FavoritesMenu::InstallFavoritesInputHook();
+            Aozora::SWF::InstallAlchemyActionTraceHook();
+            Aozora::SWF::InstallAlchemyEquipTraceHook();
             Aozora::SWF::RegisterFavoriteChangeSink();
         }
         if (a_message->type == F4SE::MessagingInterface::kPostLoadGame) {
@@ -153,7 +155,10 @@ AOZORA_SWF_EXPORT bool F4SEAPI F4SEPlugin_Query(
 
 F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_interface)
 {
-    F4SE::Init(a_interface);
+    F4SE::Init(a_interface, F4SE::InitInfo{
+        .trampoline = true,
+        .trampolineSize = 128
+    });
     Aozora::SWF::FavoritesMenu::WriteLog("PLUGIN_LOAD build=skyui_like_v1n");
     if (auto* messaging = F4SE::GetMessagingInterface()) {
         messaging->RegisterListener(MessageHandler);
@@ -171,5 +176,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_interface)
     Aozora::SWF::FavoritesMenu::Register();
     Aozora::SWF::FavoritesMenu::RegisterInput();
     Aozora::SWF::FavoritesMenu::InstallFavoritesInputHook();
+    Aozora::SWF::InstallAlchemyActionTraceHook();
+    Aozora::SWF::InstallAlchemyEquipTraceHook();
     return true;
 }

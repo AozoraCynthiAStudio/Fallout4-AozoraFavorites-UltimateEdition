@@ -347,6 +347,61 @@ namespace Aozora::SWF
         return ReadFloatSetting("General", "fSlowMotionScale", 0.0F, 0.0F, 1.0F);
     }
 
+    int ReadLogLevel()
+    {
+        static const int level = ReadIntSetting("iLogLevel", 2, 0, 3);
+        return level;
+    }
+
+    LogLevel ClassifyLogLevel(std::string_view a_message)
+    {
+        const auto startsWith = [a_message](std::string_view a_prefix) {
+            return a_message.rfind(a_prefix, 0) == 0;
+        };
+        const auto contains = [a_message](std::string_view a_text) {
+            return a_message.find(a_text) != std::string_view::npos;
+        };
+
+        if (contains("exception") || contains("crash") || contains("fatal")) {
+            return LogLevel::Error;
+        }
+        if (contains("failed") || contains("missing") || contains("unavailable") ||
+            contains("skipped") || contains("mismatch") || contains("rejected") ||
+            contains("success=0") || contains("accepted=0")) {
+            return LogLevel::Warning;
+        }
+
+        if (startsWith("PLUGIN_LOAD") || startsWith("STORE_SERIALIZATION") ||
+            startsWith("MENU_OPEN") || startsWith("MENU_CLOSE") ||
+            startsWith("MENU_STACK") || startsWith("MENU_SESSION_") ||
+            startsWith("session started") || startsWith("session ended") ||
+            startsWith("FAVORITE_ACTION") || startsWith("ALCH_ACTION_BEGIN") ||
+            startsWith("ALCH_ACTION_COMPLETE")) {
+            return LogLevel::Info;
+        }
+
+        if (startsWith("ALCH_ACTION_CALLER") || startsWith("ALCH_ACTION_CALLSTACK") ||
+            startsWith("ALCH_ACTION_PIPELINE") || startsWith("ALCH_DRINK_POTION") ||
+            startsWith("ALCH_NATIVE_USE_TRACE") || startsWith("ALCH_EQUIP_OBJECT") ||
+            startsWith("WEAPON_ACTION") || startsWith("weapon ") ||
+            startsWith("SWF_EQUIPPED") || startsWith("EQUIPPED_ROW_DRAW") ||
+            startsWith("SWF_STAGE") || contains("assign-hotkey") ||
+            startsWith("PIPBOY_SELECTION") || startsWith("PIPBOY_NATIVE_INPUT") ||
+            startsWith("PIPBOY_DIRECT_REFRESH") || startsWith("PIPBOY_FAVORITE_EVENT") ||
+            startsWith("PIPBOY_QUICKKEY") || startsWith("FIS_") ||
+            startsWith("EQUIP_MATCH") || startsWith("SNAPSHOT_") ||
+            startsWith("AS3_CALL") || startsWith("DIRECT_AS3_BIND") ||
+            startsWith("F4SE_SCALEFORM") || startsWith("MENU_CODE_OBJECT") ||
+            startsWith("MENU_SWF_LOAD") || startsWith("MENU_INPUT") ||
+            startsWith("PLAYER_INPUT_CAPTURED") || startsWith("INPUT_") ||
+            startsWith("NATIVE_") || startsWith("VANILLA_") ||
+            startsWith("ICON_LIBRARY") || startsWith("ICON_CLASS") ||
+            startsWith("ALCH_ACTION_TRACE")) {
+            return LogLevel::Debug;
+        }
+        return LogLevel::Info;
+    }
+
     int ReadAllSortMode() { return ReadIntSetting("iAllSortMode", 0, 0, 1); }
     int ReadIconMode() { return ReadIntSetting("iIconMode", 2, 0, 2); }
     bool ReadShowItemInnerName() { return ReadIntSetting("bShowItemInnerName", 0, 0, 1) != 0; }

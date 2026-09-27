@@ -181,8 +181,10 @@ package aozora.favorites
             lookBitmap.filters = [new ColorMatrixFilter(buildColorMatrix(grade, saturation, contrast))];
             lookBitmap.x = 0;
             lookBitmap.y = 0;
-            lookBitmap.scaleX = 1;
-            lookBitmap.scaleY = 1;
+            // Mascot DDS assets are 1024x1536 for quality, while the prior
+            // runtime assets were 512x768. Keep the same logical footprint.
+            lookBitmap.scaleX = 0.5;
+            lookBitmap.scaleY = 0.5;
         }
 
         private function buildColorMatrix(brightness:Number, saturation:Number, contrast:Number):Array

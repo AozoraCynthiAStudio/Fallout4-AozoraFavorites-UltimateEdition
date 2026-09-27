@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -68,6 +69,7 @@ namespace Aozora::SWF
 
         void PushStatus(const char* a_status);
         void InstallDirectCodeObjectFunctions();
+        bool UpdateSelectionVisual();
         void MoveSelectionNative(int a_delta, std::uint32_t a_focusSource = 1);
         void MoveCategoryNative(int a_delta, std::uint32_t a_focusSource = 1);
         void ActivateSelectionNative();
@@ -88,6 +90,11 @@ namespace Aozora::SWF
         std::vector<FavoriteSnapshotEntry> entries_;
         std::uint32_t categoryIndex_{ 0 };
         std::uint32_t selectedIndex_{ 0 };
+        std::uint64_t sessionID_{ 0 };
+        bool snapshotCacheValid_{ false };
+        std::uint64_t lastEntryHash_{ 0 };
+        std::uint32_t lastCategory_{ 0 };
+        std::uint32_t lastSelected_{ 0 };
         // 0=none, 1=keyboard, 2=gamepad, 3=mouse. The AS3 layer uses this
         // to prevent a synthetic MOUSE_OVER from stealing a keyboard/stick
         // selection immediately after a snapshot rebuild.

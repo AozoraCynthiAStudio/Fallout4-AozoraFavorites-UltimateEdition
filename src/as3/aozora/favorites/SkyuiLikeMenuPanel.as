@@ -17,6 +17,8 @@ package aozora.favorites
     import flash.system.ApplicationDomain;
     import flash.text.TextField;
     import flash.text.TextFormat;
+    import flash.utils.clearTimeout;
+    import flash.utils.setTimeout;
 
     /**
      * skyui like v1n visual layer.
@@ -47,6 +49,7 @@ package aozora.favorites
         private var iconLibraryLoaders:Object = {};
         private var iconLibraryDomains:Object = {};
         private var iconLibraryRetries:Object = {};
+        private var iconLibraryRetryTimers:Object = {};
         private var iconDiagnosticKeys:Object = {};
         private var lastEquipmentDiagnostic:String = "";
         private var silhouetteMounted:Boolean = false;
@@ -84,8 +87,10 @@ package aozora.favorites
         private var lastMouseStageY:Number = 0.0;
         private var statusField:TextField;
 
-        private const categories:Array = ["All", "Weapons", "Outfits", "Aid"];
-        private const categoryLabels:Array = ["全部", "武器", "衣服", "AID"];
+        private const categories:Array = ["ALL", "WEAP", "ARMO", "ALCH"];
+        private const categoryLabels:Array = [
+            "$AOZORA_CATEGORY_ALL", "$AOZORA_CATEGORY_WEAPONS",
+            "$AOZORA_CATEGORY_OUTFITS", "$AOZORA_CATEGORY_AID"];
         private const BASE_STAGE_WIDTH:Number = 1280.0;
         private const BASE_STAGE_HEIGHT:Number = 720.0;
         private var focusColor:uint = 0xFFC857;
@@ -212,6 +217,45 @@ package aozora.favorites
                     hasMousePosition = true;
                 }
             }
+        }
+
+        public function UpdateSelectionOnly(nextIndex:int, nextFocusSource:int):Boolean
+        {
+            if (nextIndex < 0 || nextIndex >= visibleItems.length)
+                return false;
+            if (!rowLayer || !rowLayer.getChildByName("favoriteRow_" + nextIndex))
+                return false;
+
+            var normalizedFocus:int = clampInt(nextFocusSource, 0, 3);
+            // The footer keycaps differ between keyboard/mouse and gamepad.
+            // Let ApplySnapshot rebuild once when crossing that boundary.
+            if ((focusSource == 2) != (normalizedFocus == 2))
+                return false;
+
+            selectedIndex = nextIndex;
+            focusSource = normalizedFocus;
+            var nextFocus:String = currentFocusSignatureFor(visibleItems);
+            if (nextFocus.length > 0) {
+                if (hasFocusSignature && nextFocus != focusSignature && mascotController)
+                    mascotController.onFocusChanged();
+                focusSignature = nextFocus;
+                hasFocusSignature = true;
+            } else {
+                focusSignature = "";
+                hasFocusSignature = false;
+            }
+
+            updateSelection();
+            applyNameMarqueePosition();
+            if (focusSource != 3) {
+                mouseMovedSinceInput = false;
+                if (stage) {
+                    lastMouseStageX = stage.mouseX;
+                    lastMouseStageY = stage.mouseY;
+                    hasMousePosition = true;
+                }
+            }
+            return true;
         }
 
         public function ApplyStatus(status:String):void
@@ -475,7 +519,7 @@ package aozora.favorites
             var headerBlockY:Number = numberValue(layout, "headerBlockY", 0.0);
             var footerBlockX:Number = numberValue(layout, "footerBlockX", 0.0);
             var footerBlockY:Number = numberValue(layout, "footerBlockY", 0.0);
-            var micro:TextField = makeText("PROPERTY OF VAULT-TEC", titleBlockX + 16, titleBlockY + 4,
+            var micro:TextField = makeText("$AOZORA_TOP_MICRO", titleBlockX + 16, titleBlockY + 4,
                 numberValue(layout, "topMicroFontSize", 8.0), themeColor(0.55), false);
             micro.alpha = numberValue(layout, "topMicroAlpha", 0.55);
             micro.width = width - 32.0; micro.height = 16.0;
@@ -484,7 +528,7 @@ package aozora.favorites
             micro.defaultTextFormat = microFormat; micro.setTextFormat(microFormat);
             themeLayer.addChild(micro);
 
-            var title:TextField = makeText("FAVORITES",
+            var title:TextField = makeText("$AOZORA_TITLE",
                 titleBlockX + numberValue(layout, "titleX", 16.0), titleBlockY + numberValue(layout, "titleY", 18.0),
                 numberValue(layout, "titleFontSize", 29.0), themeColor(1.0), true);
             title.width = width - 32.0;
@@ -543,9 +587,9 @@ package aozora.favorites
             themeLayer.addChild(categoryLine);
 
             var headerY:Number = numberValue(layout, "headerY", 108.0);
-            addHeader("名称", headerBlockX + numberValue(layout, "headerNameX", 47.0), headerBlockY + headerY, "left");
-            addHeader("快捷键", headerBlockX + numberValue(layout, "headerHotkeyX", 210.0), headerBlockY + headerY, "center");
-            addHeader("数量", headerBlockX + numberValue(layout, "headerQuantityX", 259.0), headerBlockY + headerY, "right");
+            addHeader("$AOZORA_HEADER_NAME", headerBlockX + numberValue(layout, "headerNameX", 47.0), headerBlockY + headerY, "left");
+            addHeader("$AOZORA_HEADER_HOTKEY", headerBlockX + numberValue(layout, "headerHotkeyX", 210.0), headerBlockY + headerY, "center");
+            addHeader("$AOZORA_HEADER_QUANTITY", headerBlockX + numberValue(layout, "headerQuantityX", 259.0), headerBlockY + headerY, "right");
 
             statusField = makeText("", headerBlockX + 16, headerBlockY + headerY + 18, 11, themeColor(0.70), false);
             statusField.width = width - 32; statusField.height = 22; statusField.visible = false;
@@ -560,11 +604,11 @@ package aozora.favorites
             themeLayer.addChild(footerLine);
 
             var gamepad:Boolean = focusSource == 2;
-            addFooterHint(gamepad ? "A" : "E", "使用", footerX, footerY,
+            addFooterHint(gamepad ? "A" : "E", "$AOZORA_ACTION_USE", footerX, footerY,
                 numberValue(layout, "footerKey1X", 0.0), numberValue(layout, "footerKey1Y", 0.0),
                 numberValue(layout, "footerKey1TextY", 1.0),
                 numberValue(layout, "footerLabel1X", 36.0), numberValue(layout, "footerLabel1Y", 5.0), false);
-            addFooterHint(gamepad ? "X" : "Q", "取消收藏", footerX, footerY,
+            addFooterHint(gamepad ? "X" : "Q", "$AOZORA_ACTION_REMOVE", footerX, footerY,
                 numberValue(layout, "footerKey2X", 151.0), numberValue(layout, "footerKey2Y", 0.0),
                 numberValue(layout, "footerKey2TextY", 1.0),
                 numberValue(layout, "footerLabel2X", 187.0), numberValue(layout, "footerLabel2Y", 5.0), true);
@@ -581,7 +625,7 @@ package aozora.favorites
 
         private function addBottomDetail(width:Number, height:Number, footerX:Number, footerY:Number):void
         {
-            var detail:TextField = makeText("VAULT-TEC // FAVORITES TERMINAL",
+            var detail:TextField = makeText("$AOZORA_FOOTER_DETAIL",
                 footerX, footerY + numberValue(layout, "footerDetailY", 51.0),
                 numberValue(layout, "footerDetailFontSize", 7.0), themeColor(0.55), false);
             detail.alpha = numberValue(layout, "footerDetailAlpha", 0.55);
@@ -702,10 +746,10 @@ package aozora.favorites
             visibleItems = [];
             var category:String = String(categories[categoryIndex]);
             for each (var candidate:Object in items) {
-                if (category == "All" ||
-                    (category == "Weapons" && candidate.type == "武器") ||
-                    (category == "Outfits" && candidate.type == "服装") ||
-                    (category == "Aid" && candidate.type == "药品"))
+                if (category == "ALL" ||
+                    (category == "WEAP" && candidate.type == "WEAP") ||
+                    (category == "ARMO" && candidate.type == "ARMO") ||
+                    (category == "ALCH" && candidate.type == "ALCH"))
                     visibleItems.push(candidate);
             }
         }
@@ -731,8 +775,8 @@ package aozora.favorites
             var rowIconX:Number = numberValue(layout, "rowIconX", 13.0);
             var rowIconY:Number = numberValue(layout, "rowIconY", 10.0);
 
-            var rawName:String = item && item.name ? String(item.name) : "未知物品";
-            var type:String = item && item.type ? String(item.type) : "物品";
+            var rawName:String = item && item.name ? String(item.name) : "";
+            var type:String = item && item.type ? String(item.type) : "OTHER";
             var iconLibrary:String = item && item.iconLibrary ? String(item.iconLibrary) : "";
             var iconClass:String = item && item.iconClass ? String(item.iconClass) : "";
             var iconCategory:String = item && item.fallbackIconType ? String(item.fallbackIconType) :
@@ -779,6 +823,9 @@ package aozora.favorites
 
             var count:int = item && item.count is Number ? int(item.count) : 0;
             var displayCount:int = Math.max(0, Math.min(999, count));
+            // The quantity prefix is a universal HUD unit. Keeping it literal
+            // avoids creating a composite "$KEY" value that the Scaleform
+            // translator cannot resolve at runtime.
             var quantityLabel:String = count > 999 ? "x999+" : "x" + displayCount;
             var quantity:TextField = makeText(quantityLabel,
                 numberValue(layout, "rowQuantityX", 257.0), numberValue(layout, "rowQuantityY", 8.0) + rowTextBlockY,
@@ -834,26 +881,46 @@ package aozora.favorites
                     background.graphics.moveTo(0, rowHeight); background.graphics.lineTo(rowWidth, rowHeight);
                 }
 
-                setTextColor(nameFieldForRow(row), active ? focusColor : (equipped ? equippedColor : themeColor(0.92)));
+                // Focus is represented by the amber frame only. Keep the
+                // equipped cyan state visible while the row is selected.
+                setTextColor(nameFieldForRow(row), equipped ? equippedColor : themeColor(0.92));
                 var selectedItem:Object = index >= 0 && index < visibleItems.length ? visibleItems[index] : null;
                 var hasHotkey:Boolean = selectedItem && selectedItem.hotkey is Number && int(selectedItem.hotkey) >= 0;
                 setTextColor(row.getChildByName("hotkeyField") as TextField,
-                    active ? focusColor : (equipped ? equippedColor :
-                        (hasHotkey ? themeColor(0.92) : themeColor(0.50))));
+                    equipped ? equippedColor :
+                        (hasHotkey ? themeColor(0.92) : themeColor(0.50)));
                 setTextColor(row.getChildByName("quantityField") as TextField,
-                    active ? focusColor : (equipped ? equippedColor : themeColor(0.92)));
+                    equipped ? equippedColor : themeColor(0.92));
                 setIconColor(row.getChildByName("itemIcon") as Sprite,
-                    active ? focusColor : (equipped ? equippedColor : themeColor(1.0)));
+                    equipped ? equippedColor : themeColor(1.0));
                 var hotkeyBox:Shape = row.getChildByName("hotkeyBox") as Shape;
                 var hotkeyScale:Number = numberValue(layout, "rowHotkeyScale", 1.0);
                 var hotkeyWidth:Number = numberValue(layout, "rowHotkeyWidth", 30.0) * hotkeyScale;
                 var hotkeyHeight:Number = numberValue(layout, "rowHotkeyHeight", 29.0) * hotkeyScale;
                 hotkeyBox.graphics.clear();
-                hotkeyBox.graphics.lineStyle(1.2, active ? focusColor : (equipped ? equippedColor : themeColor(0.92)),
-                    active ? 0.98 : 0.90);
+                hotkeyBox.graphics.lineStyle(1.2, equipped ? equippedColor : themeColor(0.92), 0.90);
                 strokeKeyCap(hotkeyBox.graphics, numberValue(layout, "rowHotkeyX", 210.0),
                     numberValue(layout, "rowHotkeyY", 7.0), hotkeyWidth, hotkeyHeight, 3.0 * hotkeyScale);
             }
+            updateActionLabel();
+        }
+
+        private function updateActionLabel():void
+        {
+            if (!footerLabels || footerLabels.length == 0)
+                return;
+            var labelField:TextField = footerLabels[0] as TextField;
+            if (!labelField)
+                return;
+            var item:Object = selectedIndex >= 0 && selectedIndex < visibleItems.length ?
+                visibleItems[selectedIndex] : null;
+            var label:String = "$AOZORA_ACTION_USE";
+            if (item) {
+                var type:String = item.type ? String(item.type) : "";
+                if (type == "WEAP" || type == "ARMO")
+                    label = Boolean(item.equipped) ? "$AOZORA_ACTION_UNEQUIP" : "$AOZORA_ACTION_EQUIP";
+            }
+            labelField.text = label;
         }
 
         private function nameFieldForRow(row:Sprite):TextField
@@ -1181,6 +1248,11 @@ package aozora.favorites
             var domain:ApplicationDomain = info ? info.applicationDomain : null;
             if (key.length)
                 iconLibraryDomains[key] = domain;
+            if (iconLibraryRetryTimers[key] != null) {
+                clearTimeout(uint(iconLibraryRetryTimers[key]));
+                delete iconLibraryRetryTimers[key];
+            }
+            delete iconLibraryRetries[key];
             if (key == "FallUI_IconLib.swf") {
                 iconLibraryDomain = domain;
                 iconLibraryReady = domain != null;
@@ -1200,11 +1272,42 @@ package aozora.favorites
             var key:String = loader && loader.name ? String(loader.name).replace(/^aozoraIconLibrary:/, "") : "";
             var retried:Boolean = Boolean(iconLibraryRetries[key]);
             writeDiagnostic("ICON_LIBRARY load-error path=" + key + " retry=" + (retried ? "0" : "1"));
-            if (retried)
+            if (retried) {
+                // A failed Loader must not permanently occupy the request
+                // cache. The next visual request can create a fresh Loader.
+                if (iconLibraryRetryTimers[key] != null) {
+                    clearTimeout(uint(iconLibraryRetryTimers[key]));
+                    delete iconLibraryRetryTimers[key];
+                }
+                delete iconLibraryLoaders[key];
+                delete iconLibraryRetries[key];
+                delete iconLibraryDomains[key];
+                if (key == "FallUI_IconLib.swf") {
+                    iconLibraryLoader = null;
+                    iconLibraryDomain = null;
+                    iconLibraryReady = false;
+                }
+                writeDiagnostic("ICON_LIBRARY unavailable after retry path=" + key);
                 return;
+            }
             iconLibraryRetries[key] = true;
-            if (key == "FallUI_IconLib.swf")
-                loader.load(new URLRequest("Interface/FallUI_IconLib.swf"));
+            if (iconLibraryRetryTimers[key] == null)
+                iconLibraryRetryTimers[key] = setTimeout(retryIconLibrary, 200, key);
+            writeDiagnostic("ICON_LIBRARY retry-scheduled path=" + key + " delayMs=200");
+        }
+
+        private function retryIconLibrary(key:String):void
+        {
+            delete iconLibraryRetryTimers[key];
+            var loader:Loader = iconLibraryLoaders[key] as Loader;
+            if (!loader) {
+                delete iconLibraryRetries[key];
+                requestIconLibrary(key);
+                return;
+            }
+            var retryPath:String = key == "FallUI_IconLib.swf" ?
+                "Interface/FallUI_IconLib.swf" : key;
+            loader.load(new URLRequest(retryPath));
         }
 
         private function animateVisuals(event:Event):void
@@ -1426,9 +1529,9 @@ package aozora.favorites
             var domain:ApplicationDomain = iconLibraryDomains[libraryKey] as ApplicationDomain;
             if (!domain) {
                 requestIconLibrary(libraryKey);
-                if (!iconDiagnosticKeys["library-missing"]) {
-                    iconDiagnosticKeys["library-missing"] = true;
-                    writeDiagnostic("ICON_LIBRARY unavailable path=" + libraryKey);
+                if (!iconDiagnosticKeys["library-pending"]) {
+                    iconDiagnosticKeys["library-pending"] = true;
+                    writeDiagnostic("ICON_LIBRARY pending path=" + libraryKey);
                 }
                 return null;
             }
@@ -1597,12 +1700,12 @@ package aozora.favorites
                     value = value.substr(0, separator);
             }
             value = value.replace(/\s+$/, "");
-            return value.length > 0 ? value : "未知物品";
+            return value.length > 0 ? value : "$AOZORA_UNKNOWN_ITEM";
         }
 
         private function hotkeyLabel(slot:int):String
         {
-            if (slot < 0 || slot >= 12) return "—";
+            if (slot < 0 || slot >= 12) return "$AOZORA_HOTKEY_EMPTY";
             if (slot < 9) return String(slot + 1);
             if (slot == 9) return "0";
             return slot == 10 ? "-" : "=";

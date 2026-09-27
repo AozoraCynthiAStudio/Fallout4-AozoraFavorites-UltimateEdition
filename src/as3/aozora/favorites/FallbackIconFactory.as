@@ -83,8 +83,8 @@ package aozora.favorites
         {
             var category:String = value ? value.toLowerCase() : "";
             if (!category.length) {
-                return type == "服装" ? "Clothing" :
-                    (type == "药品" ? "Medicine" : (type == "武器" ? "Rifle" : "Utility"));
+                return type == "ARMO" ? "Clothing" :
+                    (type == "ALCH" ? "Medicine" : (type == "WEAP" ? "Rifle" : "Utility"));
             }
             if (category == "pistol") return "Pistol";
             if (category == "rifle" || category == "shotgun" || category == "ranged") return "Rifle";

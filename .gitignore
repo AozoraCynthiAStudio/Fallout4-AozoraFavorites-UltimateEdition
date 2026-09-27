@@ -4,13 +4,22 @@
 **/build/
 package/
 preview/
-
-# Generated game binaries and compiled scripts
-*.dll
-*.swf
-*.pex
-*.lib
-*.obj
+tools/vendor/
+assets/runtime/Textures/
 
 # Generated preview-only fallback images
 src/as3/aozora/favorites/fallback_icons/
+
+# Native build products
+*.dll
+*.swf
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.zip
+
+# Operating-system files
+Thumbs.db
+.DS_Store

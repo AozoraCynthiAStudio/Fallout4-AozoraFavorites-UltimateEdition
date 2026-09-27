@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -47,9 +48,10 @@ namespace Aozora::SWF
         using FunctionParams = Scaleform::GFx::FunctionHandler::Params;
         using PipboyButtonEvent_t = void (*)(RE::BSInputEventUser*, const RE::ButtonEvent*);
         PipboyButtonEvent_t g_originalPipboyButtonEvent{ nullptr };
-        bool g_pipboyNativeHookInstalled{ false };
+        bool g_pipboyHookInstalled{ false };
         std::atomic_bool g_pipboyFavoriteRetryPending{ false };
         FavoritesMenu* g_menu{ nullptr };
+        std::uint64_t g_menuSessionCounter{ 0 };
         std::uint32_t g_lastCategoryIndex{ 0 };
         bool g_registered{ false };
         bool g_favoritesHookInstalled{ false };
@@ -561,7 +563,7 @@ namespace Aozora::SWF
             }
             // Pip-Boy quickkeys are deliberately disabled. Hotkeys are edited
             // in Aozora Favorites, while gameplay activation remains separate.
-            RE::SendHUDMessage::ShowHUDMessage("请在青空收藏中设置", nullptr, true, false);
+            RE::SendHUDMessage::ShowHUDMessage("$AOZORA_HOTKEY_NOTICE", nullptr, true, false);
             Log("PIPBOY_NATIVE_HINT numeric-disabled shown=1");
             return true;
         }
@@ -589,6 +591,34 @@ namespace Aozora::SWF
                     (hintShown ? "shown" : "suppressed") +
                     " consumed=1 originalCalled=0");
             }
+        }
+
+        void HardBlockFavoritesEscape(RE::ButtonEvent* a_event,
+            std::string_view a_layer)
+        {
+            if (!a_event) {
+                return;
+            }
+            const bool released = a_event->QReleased();
+            a_event->strUserEvent = RE::BSFixedString("AozoraBlockedMenuEscape");
+            a_event->idCode = -1;
+            a_event->disabled = true;
+            a_event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
+            if (released) {
+                Log("MENU_ESCAPE_BLOCK layer=" + std::string(a_layer) +
+                    " consumed=1 originalCalled=0");
+            }
+        }
+
+        void HardBlockGameplayDPad(RE::ButtonEvent* a_event)
+        {
+            if (!a_event) {
+                return;
+            }
+            a_event->strUserEvent = RE::BSFixedString("AozoraBlockedGameplayDPad");
+            a_event->idCode = -1;
+            a_event->disabled = true;
+            a_event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
         }
 
         void SchedulePipboyFavoriteRetry(std::uint32_t a_attempt);
@@ -687,11 +717,10 @@ namespace Aozora::SWF
 
         void InstallPipboyNativeInputHook()
         {
-            Log("PIPBOY_NATIVE_HOOK install begin");
-            if (g_pipboyNativeHookInstalled) {
-                Log("PIPBOY_NATIVE_HOOK install success runtime=address-library-vtable already=1");
+            if (g_pipboyHookInstalled) {
                 return;
             }
+            Log("PIPBOY_NATIVE_HOOK install begin");
             try {
                 REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE::PipboyMenu[1] };
                 g_originalPipboyButtonEvent = reinterpret_cast<PipboyButtonEvent_t>(
@@ -700,7 +729,7 @@ namespace Aozora::SWF
                     Log("PIPBOY_NATIVE_HOOK install failed reason=original-null");
                     return;
                 }
-                g_pipboyNativeHookInstalled = true;
+                g_pipboyHookInstalled = true;
                 Log("PIPBOY_NATIVE_HOOK install success runtime=address-library-vtable slot=8");
             } catch (...) {
                 g_originalPipboyButtonEvent = nullptr;
@@ -902,6 +931,15 @@ namespace Aozora::SWF
             RE::BSInputEventUser* a_self,
             const RE::InputEvent* a_event)
         {
+            if (IsDPadDirection(a_event) && IsGameplayFavoritesContext()) {
+                auto* button = const_cast<RE::ButtonEvent*>(a_event->As<RE::ButtonEvent>());
+                const bool justPressed = button && button->QJustPressed();
+                HardBlockGameplayDPad(button);
+                if (justPressed) {
+                    Log("FAVORITES_MANAGER_INPUT dpad blocked=1 originalCalled=0");
+                }
+                return false;
+            }
             if (IsPipboyOpen() && IsQuickkeyButtonEvent(a_event)) {
                 const auto* button = a_event->As<RE::ButtonEvent>();
                 const auto eventName = button ?
@@ -948,6 +986,17 @@ namespace Aozora::SWF
 
             void OnButtonEvent(const RE::ButtonEvent* a_event) override
             {
+                if (a_event && FavoritesMenu::IsOpen() &&
+                    a_event->GetBSButtonCode() == RE::BS_BUTTON_CODE::kEscape) {
+                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
+                    const bool justPressed = a_event->QJustPressed();
+                    HardBlockFavoritesEscape(event, "menu-controls");
+                    if (justPressed) {
+                        Log("MENU_INPUT close-key action=queue-hide");
+                        FavoritesMenu::Close();
+                    }
+                    return;
+                }
                 if (a_event && IsPipboyOpen() &&
                     IsQuickkeyUserEvent(a_event->QUserEvent().c_str())) {
                     // This handler is registered at the front of MenuControls.
@@ -955,6 +1004,23 @@ namespace Aozora::SWF
                     // vanilla Quickkey consumer.
                     HardBlockPipboyQuickkey(const_cast<RE::ButtonEvent*>(a_event),
                         "menu-controls");
+                    return;
+                }
+                if (a_event && IsDPadDirection(a_event) &&
+                    IsGameplayFavoritesContext()) {
+                    const auto action = DPadActionForInput(
+                        a_event->QUserEvent().c_str(), a_event->GetBSButtonCode());
+                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
+                    const bool justPressed = a_event->QJustPressed();
+                    HardBlockGameplayDPad(event);
+                    if (justPressed) {
+                        if (action == 2) {
+                            Log("MENU_CONTROLS_CAPTURED input=DPad action=open-custom-menu consumed=1");
+                            FavoritesMenu::Open();
+                        } else {
+                            Log("MENU_CONTROLS_CAPTURED input=DPad action=no-action consumed=1");
+                        }
+                    }
                     return;
                 }
                 if (a_event && a_event->QJustPressed() &&
@@ -1029,7 +1095,9 @@ namespace Aozora::SWF
                     return IsGameplayFavoritesContext() || IsVanillaFavoritesOpen();
                 }
                 if (IsDPadDirection(button) && IsGameplayFavoritesContext()) {
-                    return DPadActionForInput(button->QUserEvent().c_str(), button->GetBSButtonCode()) == 2;
+                    // Handle both configured actions here: action 0 is an
+                    // intentional no-op, not a request to pass to vanilla.
+                    return true;
                 }
                 if (button->device == RE::INPUT_DEVICE::kKeyboard && IsGameplayFavoritesContext()) {
                     const auto slot = HotkeySlotForCode(button->GetBSButtonCode());
@@ -1044,6 +1112,17 @@ namespace Aozora::SWF
                     return;
                 }
                 if (FavoritesMenu::IsOpen()) {
+                    if (a_event->device != RE::INPUT_DEVICE::kMouse &&
+                        a_event->GetBSButtonCode() == RE::BS_BUTTON_CODE::kEscape) {
+                        auto* event = const_cast<RE::ButtonEvent*>(a_event);
+                        const bool justPressed = a_event->QJustPressed();
+                        HardBlockFavoritesEscape(event, "player-controls");
+                        if (justPressed) {
+                            Log("MENU_INPUT close-key action=queue-hide");
+                            FavoritesMenu::Close();
+                        }
+                        return;
+                    }
                     if (!IsConsoleTrigger(a_event) && a_event->device != RE::INPUT_DEVICE::kMouse) {
                         FavoritesMenu::HandlePlayerButton(a_event);
                     }
@@ -1055,18 +1134,26 @@ namespace Aozora::SWF
                         "player-controls");
                     return;
                 }
+                if (IsDPadDirection(a_event) && IsGameplayFavoritesContext()) {
+                    const auto action = DPadActionForInput(
+                        a_event->QUserEvent().c_str(), a_event->GetBSButtonCode());
+                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
+                    const bool justPressed = a_event->QJustPressed();
+                    HardBlockGameplayDPad(event);
+                    if (justPressed) {
+                        if (action == 2) {
+                            Log("PLAYER_INPUT_CAPTURED input=DPad action=open-custom-menu consumed=1");
+                            FavoritesMenu::Open();
+                        } else {
+                            Log("PLAYER_INPUT_CAPTURED input=DPad action=no-action consumed=1");
+                        }
+                    }
+                    return;
+                }
                 if (!a_event->QJustPressed()) {
                     return;
                 }
                 if (!IsFavoritesTrigger(a_event)) {
-                    if (IsDPadDirection(a_event) && IsGameplayFavoritesContext() &&
-                        DPadActionForInput(a_event->QUserEvent().c_str(), a_event->GetBSButtonCode()) == 2) {
-                        auto* event = const_cast<RE::ButtonEvent*>(a_event);
-                        event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
-                        Log("PLAYER_INPUT_CAPTURED input=DPad action=open-custom-menu");
-                        FavoritesMenu::Open();
-                        return;
-                    }
                     if (a_event->device == RE::INPUT_DEVICE::kKeyboard && IsGameplayFavoritesContext()) {
                         const auto slot = HotkeySlotForCode(a_event->GetBSButtonCode());
                         if (slot < 12 && ActivateHotkeySlot(slot)) {
@@ -1104,6 +1191,10 @@ namespace Aozora::SWF
 
         void Log(std::string_view a_message)
         {
+            if (static_cast<std::uint8_t>(ClassifyLogLevel(a_message)) >
+                static_cast<std::uint8_t>(ReadLogLevel())) {
+                return;
+            }
             REX::INFO("[AozoraFavoritesSWF] {}", a_message);
             static std::mutex logMutex;
             std::lock_guard lock(logMutex);
@@ -1111,6 +1202,73 @@ namespace Aozora::SWF
             if (file.is_open()) {
                 file << '[' << GetTickCount64() << "] " << a_message << '\n';
             }
+        }
+
+        void MixSnapshotHash(std::uint64_t& a_hash, std::uint64_t a_value)
+        {
+            a_hash ^= a_value + 0x9E3779B97F4A7C15ull +
+                (a_hash << 6) + (a_hash >> 2);
+            a_hash *= 0x100000001B3ull;
+        }
+
+        void MixSnapshotString(std::uint64_t& a_hash, std::string_view a_value)
+        {
+            for (const auto character : a_value) {
+                MixSnapshotHash(a_hash, static_cast<unsigned char>(character));
+            }
+            MixSnapshotHash(a_hash, 0);
+        }
+
+        std::uint64_t SnapshotStateHash(
+            const std::vector<FavoriteSnapshotEntry>& a_entries,
+            std::uint32_t a_category,
+            std::uint32_t a_selected,
+            std::uint32_t a_focusSource,
+            int a_iconMode,
+            bool a_showItemInnerName,
+            bool a_mascotEnabled,
+            const ThemeSettings& a_theme,
+            const LayoutSettings& a_layout)
+        {
+            std::uint64_t hash = 1469598103934665603ull;
+            MixSnapshotHash(hash, a_category);
+            MixSnapshotHash(hash, a_selected);
+            MixSnapshotHash(hash, a_focusSource);
+            MixSnapshotHash(hash, static_cast<std::uint64_t>(a_iconMode));
+            MixSnapshotHash(hash, a_showItemInnerName ? 1 : 0);
+            MixSnapshotHash(hash, a_mascotEnabled ? 1 : 0);
+            MixSnapshotHash(hash, static_cast<std::uint64_t>(a_theme.mode));
+            MixSnapshotHash(hash, static_cast<std::uint64_t>(a_theme.preset));
+            MixSnapshotHash(hash, std::bit_cast<std::uint32_t>(a_theme.r));
+            MixSnapshotHash(hash, std::bit_cast<std::uint32_t>(a_theme.g));
+            MixSnapshotHash(hash, std::bit_cast<std::uint32_t>(a_theme.b));
+
+            // SkyuiLikeLayout is composed exclusively of floats, including
+            // the five float fields in each mascot entry. Hashing those
+            // values keeps layout-editor changes visible to the cache.
+            const auto* layoutValues = reinterpret_cast<const float*>(
+                std::addressof(a_layout.skyuiLike16x9));
+            constexpr auto layoutValueCount = sizeof(SkyuiLikeLayout) / sizeof(float);
+            for (std::size_t index = 0; index < layoutValueCount; ++index) {
+                MixSnapshotHash(hash, std::bit_cast<std::uint32_t>(layoutValues[index]));
+            }
+            MixSnapshotHash(hash, a_layout.editorMode ? 1 : 0);
+            MixSnapshotHash(hash, std::bit_cast<std::uint32_t>(a_layout.refreshSeconds));
+
+            for (const auto& entry : a_entries) {
+                MixSnapshotHash(hash, entry.formID);
+                MixSnapshotHash(hash, entry.instanceKey);
+                MixSnapshotHash(hash, entry.hotkeySlot);
+                MixSnapshotHash(hash, entry.count);
+                MixSnapshotHash(hash, entry.equipped ? 1 : 0);
+                MixSnapshotHash(hash, entry.useCount);
+                MixSnapshotString(hash, entry.name);
+                MixSnapshotString(hash, entry.type);
+                MixSnapshotString(hash, entry.iconLibrary);
+                MixSnapshotString(hash, entry.iconClass);
+                MixSnapshotString(hash, entry.iconCategory);
+            }
+            return hash;
         }
 
         RE::BSFixedString MenuName()
@@ -1165,24 +1323,6 @@ namespace Aozora::SWF
             }
         }
 
-        void SchedulePauseMenu()
-        {
-            std::thread([] {
-                Sleep(120);
-                auto showPause = [] {
-                    if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
-                        queue->AddMessage(RE::BSFixedString("PauseMenu"), RE::UI_MESSAGE_TYPE::kShow);
-                        Log("PAUSE_MENU queue-show-after-favorites");
-                    }
-                };
-                if (auto* tasks = F4SE::GetTaskInterface()) {
-                    tasks->AddUITask(std::move(showPause));
-                } else {
-                    showPause();
-                }
-            }).detach();
-        }
-
         void SetGameplayHandlersEnabled(bool a_enabled)
         {
             auto* controls = RE::PlayerControls::GetSingleton();
@@ -1219,6 +1359,25 @@ namespace Aozora::SWF
         return NativePipboySelectionByIndex(a_selectedIndex, a_formID, a_stackID);
     }
 
+    namespace
+    {
+        void EnsureAozoraTranslations(RE::BSScaleformManager* a_scaleform)
+        {
+            static bool loaded = false;
+            if (loaded || !a_scaleform || !a_scaleform->loader) {
+                return;
+            }
+            auto* translator = a_scaleform->GetTranslator();
+            if (!translator) {
+                return;
+            }
+            translator->AddTranslationsMod("AozoraFavorites");
+            translator->Release();
+            loaded = true;
+            Log("TRANSLATIONS loaded mod=AozoraFavorites");
+        }
+    }
+
     FavoritesMenu::FavoritesMenu()
     {
         categoryIndex_ = std::min(g_lastCategoryIndex, 3u);
@@ -1232,6 +1391,7 @@ namespace Aozora::SWF
         inputContext = RE::UserEvents::INPUT_CONTEXT_ID::kQuickContainerMenu;
 
         auto* scaleform = RE::BSScaleformManager::GetSingleton();
+        EnsureAozoraTranslations(scaleform);
         Log("MENU_CODE_OBJECT mapping-start");
         MapCodeObjectFunctions();
         bool loaded = false;
@@ -1352,7 +1512,6 @@ namespace Aozora::SWF
             " args=" + std::to_string(a_params.argCount));
         switch (function) {
         case NativeFunction::kInitialize:
-            PushStatus("ready");
             PushSnapshot();
             break;
         case NativeFunction::kClose:
@@ -1418,7 +1577,6 @@ namespace Aozora::SWF
         g_customOpenRequested = false;
         InitializeStore();
         Log("MENU_STACK opening=true");
-        PushStatus("open");
         PushSnapshot();
     }
 
@@ -1451,6 +1609,9 @@ namespace Aozora::SWF
 
         auto* event = const_cast<RE::ButtonEvent*>(a_event);
         if (close) {
+            if (code == RE::BS_BUTTON_CODE::kEscape) {
+                HardBlockFavoritesEscape(event, "favorites-menu");
+            }
             event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
             Log("MENU_INPUT close-key action=queue-hide");
             if (code == RE::BS_BUTTON_CODE::kEscape) {
@@ -1553,6 +1714,24 @@ namespace Aozora::SWF
         uiMovie->Invoke("root1.Menu_mc.ApplyStatus", nullptr, std::addressof(status), 1);
     }
 
+    bool FavoritesMenu::UpdateSelectionVisual()
+    {
+        if (!uiMovie || !uiMovie->asMovieRoot) {
+            return false;
+        }
+        Scaleform::GFx::Value arguments[2]{
+            Scaleform::GFx::Value(selectedIndex_),
+            Scaleform::GFx::Value(focusSource_)
+        };
+        Scaleform::GFx::Value result;
+        const bool invoked = uiMovie->Invoke(
+            "root1.Menu_mc.UpdateSelectionOnly", std::addressof(result), arguments, 2);
+        const bool updated = invoked && result.IsBoolean() && result.GetBoolean();
+        Log("SNAPSHOT_SELECTION_ONLY index=" + std::to_string(selectedIndex_) +
+            " updated=" + std::to_string(updated ? 1 : 0));
+        return updated;
+    }
+
     std::vector<std::size_t> FavoritesMenu::VisibleEntryIndexes() const
     {
         std::vector<std::size_t> result;
@@ -1560,9 +1739,9 @@ namespace Aozora::SWF
         for (std::size_t i = 0; i < entries_.size(); ++i) {
             const auto& type = entries_[i].type;
             const bool visible = categoryIndex_ == 0 ||
-                (categoryIndex_ == 1 && type == "武器") ||
-                (categoryIndex_ == 2 && type == "服装") ||
-                (categoryIndex_ == 3 && type == "药品");
+                (categoryIndex_ == 1 && type == "WEAP") ||
+                (categoryIndex_ == 2 && type == "ARMO") ||
+                (categoryIndex_ == 3 && type == "ALCH");
             if (visible) {
                 result.push_back(i);
             }
@@ -1576,7 +1755,6 @@ namespace Aozora::SWF
         const auto visible = VisibleEntryIndexes();
         if (visible.empty()) {
             selectedIndex_ = 0;
-            PushSnapshot();
             return;
         }
         const auto count = static_cast<int>(visible.size());
@@ -1590,7 +1768,11 @@ namespace Aozora::SWF
         selectedIndex_ = static_cast<std::uint32_t>(next);
         Log("NATIVE_SELECTION index=" + std::to_string(selectedIndex_) +
             " category=" + std::to_string(categoryIndex_));
-        PushSnapshot();
+        if (!UpdateSelectionVisual()) {
+            // Scrolling to a row outside the current viewport and switching
+            // keyboard/gamepad hint sets still require the full snapshot.
+            PushSnapshot();
+        }
     }
 
     void FavoritesMenu::MoveCategoryNative(int a_delta, std::uint32_t a_focusSource)
@@ -1695,6 +1877,21 @@ namespace Aozora::SWF
         } else if (selectedIndex_ >= visible.size()) {
             selectedIndex_ = static_cast<std::uint32_t>(visible.size() - 1);
         }
+        const auto iconMode = ReadIconMode();
+        const auto showItemInnerName = ReadShowItemInnerName();
+        const auto mascotEnabled = ReadMascotEnabled();
+        const auto themeSettings = ReadThemeSettings();
+        const auto layoutSettings = ReadLayoutSettings();
+        const auto entryHash = SnapshotStateHash(
+            entries_, categoryIndex_, selectedIndex_, focusSource_, iconMode,
+            showItemInnerName, mascotEnabled, themeSettings, layoutSettings);
+        if (snapshotCacheValid_ && lastCategory_ == categoryIndex_ &&
+            lastSelected_ == selectedIndex_ && lastEntryHash_ == entryHash) {
+            Log("SNAPSHOT_SKIP category=" + std::to_string(categoryIndex_) +
+                " selected=" + std::to_string(selectedIndex_) +
+                " hash=" + std::to_string(entryHash));
+            return;
+        }
         Scaleform::GFx::Value snapshot;
         Scaleform::GFx::Value items;
         uiMovie->CreateArray(std::addressof(items));
@@ -1738,11 +1935,10 @@ namespace Aozora::SWF
         snapshot.SetMember("categoryIndex", Scaleform::GFx::Value(categoryIndex_));
         snapshot.SetMember("selectedIndex", Scaleform::GFx::Value(selectedIndex_));
         snapshot.SetMember("focusSource", Scaleform::GFx::Value(focusSource_));
-        snapshot.SetMember("iconMode", Scaleform::GFx::Value(ReadIconMode()));
-        snapshot.SetMember("showItemInnerName", Scaleform::GFx::Value(ReadShowItemInnerName()));
-        snapshot.SetMember("mascotEnabled", Scaleform::GFx::Value(ReadMascotEnabled()));
+        snapshot.SetMember("iconMode", Scaleform::GFx::Value(iconMode));
+        snapshot.SetMember("showItemInnerName", Scaleform::GFx::Value(showItemInnerName));
+        snapshot.SetMember("mascotEnabled", Scaleform::GFx::Value(mascotEnabled));
 
-        const auto themeSettings = ReadThemeSettings();
         Scaleform::GFx::Value theme;
         uiMovie->CreateObject(std::addressof(theme));
         theme.SetMember("mode", Scaleform::GFx::Value(themeSettings.mode));
@@ -1752,7 +1948,6 @@ namespace Aozora::SWF
         theme.SetMember("b", Scaleform::GFx::Value(themeSettings.b));
         snapshot.SetMember("theme", theme);
 
-        const auto layoutSettings = ReadLayoutSettings();
         Scaleform::GFx::Value layout;
         uiMovie->CreateObject(std::addressof(layout));
         layout.SetMember("editorMode", Scaleform::GFx::Value(layoutSettings.editorMode));
@@ -1906,6 +2101,12 @@ namespace Aozora::SWF
         layout.SetMember("current", currentLayout);
         snapshot.SetMember("layout", layout);
         const bool invoked = uiMovie->Invoke("root1.Menu_mc.ApplySnapshot", nullptr, std::addressof(snapshot), 1);
+        if (invoked) {
+            snapshotCacheValid_ = true;
+            lastCategory_ = categoryIndex_;
+            lastSelected_ = selectedIndex_;
+            lastEntryHash_ = entryHash;
+        }
         Log("SNAPSHOT_PUSH entries=" + std::to_string(entries_.size()) +
             " category=" + std::to_string(categoryIndex_) +
             " selected=" + std::to_string(selectedIndex_) +
@@ -1918,6 +2119,9 @@ namespace Aozora::SWF
             return;
         }
         sessionActive_ = true;
+        sessionID_ = ++g_menuSessionCounter;
+        snapshotCacheValid_ = false;
+        Log("MENU_SESSION_START id=" + std::to_string(sessionID_));
         SetGameplayHandlersEnabled(false);
         auto* timer = RE::BSTimer::GetSingleton();
         auto* main = RE::Main::GetSingleton();
@@ -1966,15 +2170,15 @@ namespace Aozora::SWF
             }
             timeCaptured_ = false;
         }
+        Log("MENU_SESSION_END id=" + std::to_string(sessionID_));
         Log("session ended; time restored");
     }
 
     void FavoritesMenu::RequestPause()
     {
-        // ESC exits the favorites panel and opens the native pause menu after
-        // the custom menu has left the stack.
+        // The favorites menu owns the close input. ESC closes this menu only;
+        // it must not open the native pause menu as a side effect.
         Close();
-        SchedulePauseMenu();
     }
 
     RE::IMenu* FavoritesMenu::Create(const RE::UIMessage&)
