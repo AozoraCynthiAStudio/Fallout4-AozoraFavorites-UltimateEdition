@@ -747,10 +747,10 @@ namespace Aozora::SWF
                 return false;
             }
             const auto userEvent = std::string_view(button->QUserEvent().c_str());
-            return (button->device == RE::INPUT_DEVICE::kKeyboard &&
-                    button->GetBSButtonCode() == RE::BS_BUTTON_CODE::kF) ||
-                (button->device != RE::INPUT_DEVICE::kKeyboard &&
-                    (userEvent == "Favorites" || userEvent == "Quickkeys" || userEvent == "Quickkey"));
+            // Match the mapped action rather than the default physical F key,
+            // so keyboard remaps follow Quickkeys and F can be reassigned safely.
+            return userEvent == "Favorite" || userEvent == "Favorites" ||
+                userEvent == "Quickkeys" || userEvent == "Quickkey";
         }
 
         bool IsMenuCloseTrigger(const RE::InputEvent* a_event)
