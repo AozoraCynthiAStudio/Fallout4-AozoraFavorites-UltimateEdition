@@ -17,8 +17,8 @@
   使用键盘 **Q** 收藏物品，再在青空收藏菜单中为物品分配快捷键。
 - Number-key hotkey assignment in the vanilla Pip-Boy is disabled. Aozora-assigned number hotkeys remain usable during gameplay.<br>
   原版哔哔小子中的数字键快捷键分配已禁用；在青空收藏菜单中分配的数字快捷键仍可在游戏中使用。
-- Gamepad navigation is supported. Configure a single D-pad direction to open the menu and set unused directions to **No Action**.<br>
-  支持手柄操作；可指定一个十字键方向打开菜单，并将其余方向设为**无操作**。
+- Each D-pad direction can open Aozora Favorites or pass input through the original favorites logic. While Aozora is open, keyboard and gamepad buttons belong to its UI. Aozora shortcuts do not activate over other interactive menus.<br>
+  每个十字键方向可选择青空菜单或原版逻辑。旧禁用值按原版逻辑处理。青空快捷键在输入分发前消费，菜单打开时键盘和手柄按钮由青空 UI 处理，防止同键重复触发其他菜单。其他交互界面打开时不会触发青空快捷入口。
 - Uses FIS icons and category data when available, with a built-in fallback icon set when FIS is not installed. FIS is optional.<br>
   检测到 FIS 时优先使用其图标和分类；未安装 FIS 时自动使用内置兜底图标。FIS 为可选组件。
 - The mascot can be hidden. When shown, one of five pose series is randomly selected each time the menu opens; changing focus switches poses within that same series.<br>

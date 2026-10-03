@@ -14,7 +14,11 @@ Native 只传递当前比例的 `layout.current`。正式版默认关闭实时�
 
 ## 焦点和输入
 
-列表行仍使用完整 Snapshot 刷新装备、收藏、分类和热键状态。当前可见窗口内的单纯选择移动走 AS3 `UpdateSelectionOnly`，仅更新行状态和操作提示；需要滚动列表或切换键盘/手柄提示时才回退完整 Snapshot。Gameplay 下 D-Pad 无操作项也会被消费，避免打开 vanilla FavoritesMenu；Pip-Boy、Terminal、Dialogue、Workshop 等被阻止上下文保持原有输入路由。
+列表行仍使用完整 Snapshot 刷新装备、收藏、分类和热键状态。当前可见窗口内的单纯选择移动走 AS3 `UpdateSelectionOnly`，仅更新行状态和操作提示；需要滚动列表或切换键盘/手柄提示时才回退完整 Snapshot。
+
+Gameplay 下 D-Pad 仅保留 `0=原版逻辑`、`1=青空菜单`。旧值 `2` 迁移为 `0`。MenuControls 与 PlayerControls 的输入分发入口先路由青空快捷键：打开按键及其持续按住、松开由青空消费；菜单打开期间，键盘和手柄按钮先交给青空 UI，再移除事件标识与按下/松开状态，避免 F4SE 按键监听者重复触发。鼠标和控制台入口保留原有处理。菜单关闭时原版方向不修改共享事件，完整放行已有处理链。青空入口仍受通用交互界面焦点门禁限制。
+
+焦点判断豁免游戏的 HUD、被动常驻叠层、无交互输入标志的 ButtonBarMenu 和仅负责渲染的 CursorMenu/FaderMenu，其他可见交互窗口阻止青空打开。Pip-Boy、Terminal、Dialogue、Workshop 和未知第三方菜单保持自己的输入路由。`DPAD_ROUTE` 在 Info 日志记录物理编号、模式值和阻挡原因；`DPAD_CONTEXT` 在上下文改变时记录完整菜单栈及各菜单的被动叠层判断；不依赖某个 UI 框架。
 
 ## 资源协议
 

@@ -6,6 +6,7 @@
 #include "RE/B/BSScriptUtil.h"
 #include "RE/T/TESBoundObject.h"
 #include "Aozora/ScaleformMenu.h"
+#include "Aozora/Settings.h"
 
 #define AOZORA_SWF_EXPORT extern "C" [[maybe_unused]] __declspec(dllexport)
 
@@ -99,6 +100,9 @@ namespace
         if (!a_message) {
             return;
         }
+        if (a_message->type == F4SE::MessagingInterface::kGameDataReady) {
+            Aozora::SWF::MigrateDPadSettings();
+        }
         if (a_message->type == F4SE::MessagingInterface::kGameDataReady ||
             a_message->type == F4SE::MessagingInterface::kInputLoaded ||
             a_message->type == F4SE::MessagingInterface::kGameLoaded ||
@@ -159,7 +163,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_interface)
         .trampoline = true,
         .trampolineSize = 128
     });
-    Aozora::SWF::FavoritesMenu::WriteLog("PLUGIN_LOAD build=skyui_like_v1n");
+    Aozora::SWF::FavoritesMenu::WriteLog("PLUGIN_LOAD build=skyui_like_v1n release=1.0.3 dpad-routing=2mode-v7-press-reset");
     if (auto* messaging = F4SE::GetMessagingInterface()) {
         messaging->RegisterListener(MessageHandler);
     }

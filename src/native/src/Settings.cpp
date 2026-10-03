@@ -327,17 +327,67 @@ namespace Aozora::SWF
             }
         }
 
-        int DPadAction(RE::BS_BUTTON_CODE code)
+        DPadInputAction ReadDPadAction(std::string_view key)
         {
-            auto readDPad = [](std::string_view key) {
-                return ReadIntSetting(key, 1, 0, 1) == 1 ? 2 : 0;
-            };
+            switch (ReadIntSetting(key, 1, 0, 2)) {
+            case 1: return DPadInputAction::AozoraFavorites;
+            case 2: return DPadInputAction::VanillaFavorites;
+            default: return DPadInputAction::VanillaFavorites;
+            }
+        }
+
+        DPadInputAction DPadActionForCode(RE::BS_BUTTON_CODE code)
+        {
             switch (code) {
-            case RE::BS_BUTTON_CODE::kDPAD_Up: return readDPad("iDPadUpAction");
-            case RE::BS_BUTTON_CODE::kDPAD_Down: return readDPad("iDPadDownAction");
-            case RE::BS_BUTTON_CODE::kDPAD_Left: return readDPad("iDPadLeftAction");
-            case RE::BS_BUTTON_CODE::kDPAD_Right: return readDPad("iDPadRightAction");
-            default: return 1;
+            case RE::BS_BUTTON_CODE::kDPAD_Up: return ReadDPadAction("iDPadUpAction");
+            case RE::BS_BUTTON_CODE::kDPAD_Down: return ReadDPadAction("iDPadDownAction");
+            case RE::BS_BUTTON_CODE::kDPAD_Left: return ReadDPadAction("iDPadLeftAction");
+            case RE::BS_BUTTON_CODE::kDPAD_Right: return ReadDPadAction("iDPadRightAction");
+            default: return DPadInputAction::VanillaFavorites;
+            }
+        }
+    }
+
+    void MigrateDPadSettings()
+    {
+        std::ifstream file(SETTINGS_PATH.data(), std::ios::binary);
+        if (!file.is_open()) {
+            return;
+        }
+        std::string contents;
+        std::string line;
+        std::string section;
+        bool changed = false;
+        while (std::getline(file, line)) {
+            const auto trimmed = Trim(line);
+            if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']') {
+                section = Trim(trimmed.substr(1, trimmed.size() - 2));
+            }
+            const auto equals = line.find('=');
+            if (section == "General" && equals != std::string::npos) {
+                const auto key = Trim(line.substr(0, equals));
+                if (key == "iDPadUpAction" || key == "iDPadDownAction" ||
+                    key == "iDPadLeftAction" || key == "iDPadRightAction") {
+                    const auto valuePos = line.find_first_not_of(" \t", equals + 1);
+                    const auto comment = line.find(';', equals + 1);
+                    if (valuePos != std::string::npos &&
+                        Trim(line.substr(equals + 1, comment == std::string::npos ?
+                            std::string::npos : comment - equals - 1)) == "2") {
+                        line[valuePos] = '0';
+                        changed = true;
+                    }
+                }
+            }
+            contents += line;
+            if (!file.eof()) {
+                contents += '\n';
+            }
+        }
+        file.close();
+        if (changed) {
+            std::ofstream output(SETTINGS_PATH.data(), std::ios::binary | std::ios::trunc);
+            if (output.is_open()) {
+                output << contents;
             }
         }
     }
@@ -446,12 +496,18 @@ namespace Aozora::SWF
         return settings;
     }
 
-    int DPadActionForInput(std::string_view userEvent, RE::BS_BUTTON_CODE code)
+    DPadInputAction DPadActionForInput(std::string_view userEvent, RE::BS_BUTTON_CODE code)
     {
-        if (userEvent == "QuickkeyUp") return ReadIntSetting("iDPadUpAction", 1, 0, 1) == 1 ? 2 : 0;
-        if (userEvent == "QuickkeyDown") return ReadIntSetting("iDPadDownAction", 1, 0, 1) == 1 ? 2 : 0;
-        if (userEvent == "QuickkeyLeft") return ReadIntSetting("iDPadLeftAction", 1, 0, 1) == 1 ? 2 : 0;
-        if (userEvent == "QuickkeyRight") return ReadIntSetting("iDPadRightAction", 1, 0, 1) == 1 ? 2 : 0;
-        return DPadAction(code);
+        if (code == RE::BS_BUTTON_CODE::kDPAD_Up ||
+            code == RE::BS_BUTTON_CODE::kDPAD_Down ||
+            code == RE::BS_BUTTON_CODE::kDPAD_Left ||
+            code == RE::BS_BUTTON_CODE::kDPAD_Right) {
+            return DPadActionForCode(code);
+        }
+        if (userEvent == "QuickkeyUp") return ReadDPadAction("iDPadUpAction");
+        if (userEvent == "QuickkeyDown") return ReadDPadAction("iDPadDownAction");
+        if (userEvent == "QuickkeyLeft") return ReadDPadAction("iDPadLeftAction");
+        if (userEvent == "QuickkeyRight") return ReadDPadAction("iDPadRightAction");
+        return DPadActionForCode(code);
     }
 }

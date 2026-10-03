@@ -12,6 +12,7 @@
 #include <optional>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 
 #include "F4SE/F4SE.h"
 #include "Scaleform/G/GFx_ASMovieRootBase.h"
@@ -67,6 +68,11 @@ namespace Aozora::SWF
         using FavoritesShouldHandleEvent_t = bool (*)(RE::BSInputEventUser*, const RE::InputEvent*);
         FavoritesShouldHandleEvent_t g_originalFavoritesShouldHandleEvent{ nullptr };
         RE::PlayerInputHandler* g_playerInputHandler{ nullptr };
+        using InputProcessing_t = void (*)(RE::BSInputEventReceiver*, const RE::InputEvent*);
+        InputProcessing_t g_originalMenuInputProcessing{ nullptr };
+        InputProcessing_t g_originalPlayerInputProcessing{ nullptr };
+        bool g_exclusiveInputHookInstalled{ false };
+        std::unordered_set<std::uint64_t> g_exclusiveButtons;
 
         class DirectNativeFunctionHandler final : public Scaleform::GFx::FunctionHandler
         {
@@ -610,17 +616,6 @@ namespace Aozora::SWF
             }
         }
 
-        void HardBlockGameplayDPad(RE::ButtonEvent* a_event)
-        {
-            if (!a_event) {
-                return;
-            }
-            a_event->strUserEvent = RE::BSFixedString("AozoraBlockedGameplayDPad");
-            a_event->idCode = -1;
-            a_event->disabled = true;
-            a_event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
-        }
-
         void SchedulePipboyFavoriteRetry(std::uint32_t a_attempt);
 
         void RunPipboyFavoriteRetry(std::uint32_t a_attempt)
@@ -823,47 +818,181 @@ namespace Aozora::SWF
                 button->GetBSButtonCode() == RE::BS_BUTTON_CODE::kDPAD_Right;
         }
 
-        bool OtherMenuOpenExceptVanillaFavorites()
+        bool IsPassiveHudMenu(const RE::IMenu& a_menu)
+        {
+            const auto menuName = std::string_view(a_menu.menuName.c_str());
+            // CursorMenu renders the pointer; FaderMenu renders transitions.
+            // Neither owns an independent interactive screen.
+            if (menuName == "CursorMenu" || menuName == "FaderMenu") {
+                return true;
+            }
+            const bool namedHud = menuName == "HUDMenu" || menuName == "PowerArmorHUDMenu";
+            const bool buttonHints = menuName == "ButtonBarMenu";
+            const bool takesInput =
+                a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kModal) ||
+                a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kUsesCursor) ||
+                a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kUsesMenuContext) ||
+                a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kPausesGame) ||
+                a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kUsesMovementToDirection);
+            const bool permanentOverlay = a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kAlwaysOpen);
+            return (namedHud || buttonHints || permanentOverlay) && !takesInput;
+        }
+
+        bool OtherInteractiveMenuOpen(std::string* a_reason = nullptr)
         {
             auto* ui = RE::UI::GetSingleton();
             if (!ui) {
                 return true;
             }
-            for (const char* name : {
-                "BarberMenu", "BookMenu", "BarterMenu", "CharGenMenu", "Console",
-                "ContainerMenu", "CookingMenu", "CraftingMenu", "DialogueMenu",
-                "ExamineMenu", "LoadingMenu", "LockpickingMenu", "LooksMenu",
-                "MainMenu", "MessageBoxMenu", "NameMenu", "PauseMenu", "PipboyMenu",
-                "PowerArmorModMenu", "RobotModMenu", "SleepWaitMenu", "SPECIALMenu",
-                "TerminalMenu", "VATSMenu", "WorkshopMenu", "QuickContainerMenu",
-                "AozoraFavoritesMenu" }) {
-                if (ui->GetMenuOpen(RE::BSFixedString(name))) {
-                    return true;
+            for (const auto& menuHandle : ui->menuStack) {
+                auto* menu = menuHandle.get();
+                if (!menu || !menu->OnStack() || !menu->IsMenuDisplayEnabled()) {
+                    continue;
                 }
+                if (IsPassiveHudMenu(*menu)) {
+                    continue;
+                }
+                if (a_reason) {
+                    *a_reason = "menu=" + std::string(menu->menuName.c_str()) +
+                        " flags=" + std::to_string(menu->menuFlags.underlying());
+                }
+                return true;
             }
             return false;
         }
 
-        bool IsGameplayFavoritesContext()
+        std::string GameplayFavoritesBlockReason()
         {
             auto* ui = RE::UI::GetSingleton();
-            if (!ui || ui->menuMode != 0) {
-                return false;
+            if (!ui) {
+                return "ui-missing";
+            }
+            if (ui->menuMode != 0) {
+                return "ui-menu-mode=" + std::to_string(ui->menuMode);
             }
             if (auto* main = RE::Main::GetSingleton(); main && main->inMenuMode) {
-                return false;
+                return "main-menu-mode";
             }
             if (auto* controls = RE::PlayerControls::GetSingleton();
                 controls && controls->blockPlayerInput) {
-                return false;
+                return "player-input-blocked";
             }
-            return !IsPipboyOpen() && !OtherMenuOpenExceptVanillaFavorites();
+            std::string reason;
+            OtherInteractiveMenuOpen(&reason);
+            return reason;
         }
 
-        bool IsVanillaFavoritesOpen()
+        bool IsGameplayFavoritesContext()
+        {
+            return GameplayFavoritesBlockReason().empty();
+        }
+
+        void LogDPadContext()
         {
             auto* ui = RE::UI::GetSingleton();
-            return ui && ui->GetMenuOpen(RE::BSFixedString("FavoritesMenu"));
+            std::string snapshot = "ui-menu-mode=" + std::to_string(ui ? ui->menuMode : 0);
+            if (auto* main = RE::Main::GetSingleton()) {
+                snapshot += " main-menu-mode=" + std::to_string(main->inMenuMode);
+            }
+            if (auto* controls = RE::PlayerControls::GetSingleton()) {
+                snapshot += " player-input-blocked=" + std::to_string(controls->blockPlayerInput);
+            }
+            if (ui) {
+                for (const auto& menuHandle : ui->menuStack) {
+                    const auto* menu = menuHandle.get();
+                    if (!menu) {
+                        continue;
+                    }
+                    snapshot += " [" + std::string(menu->menuName.c_str()) +
+                        " flags=" + std::to_string(menu->menuFlags.underlying()) +
+                        " visible=" + std::to_string(menu->IsMenuDisplayEnabled()) +
+                        " passive=" + std::to_string(IsPassiveHudMenu(*menu)) + "]";
+                }
+            }
+            static std::string lastSnapshot;
+            if (snapshot != lastSnapshot) {
+                Log("DPAD_CONTEXT " + snapshot);
+                lastSnapshot = std::move(snapshot);
+            }
+        }
+
+        void RouteExclusiveButtons(const RE::InputEvent* a_head)
+        {
+            for (auto* input = a_head; input; input = input->next) {
+                const auto* button = input->As<RE::ButtonEvent>();
+                if (!button || button->disabled ||
+                    button->device == RE::INPUT_DEVICE::kMouse || IsConsoleTrigger(button)) {
+                    continue;
+                }
+                const auto key = (static_cast<std::uint64_t>(button->device.underlying()) << 32) |
+                    static_cast<std::uint32_t>(button->idCode);
+                // A fresh down is authoritative even if a previous release
+                // never reached these receivers during a menu transition.
+                // The other receiver sees disabled=true for this same event,
+                // so resetting here cannot dispatch the down twice.
+                if (button->QJustPressed() && g_exclusiveButtons.erase(key) != 0) {
+                    Log("EXCLUSIVE_INPUT action=reset-stale-press code=" +
+                        std::to_string(button->idCode));
+                }
+                const bool latched = g_exclusiveButtons.contains(key);
+                const bool menuOpen = FavoritesMenu::IsOpen();
+                const bool pending = g_customOpenRequested.load();
+                const bool dpad = IsDPadDirection(button);
+                const bool aozoraShortcut = dpad ?
+                    DPadActionForInput(button->QUserEvent().c_str(), button->GetBSButtonCode()) ==
+                        DPadInputAction::AozoraFavorites : IsFavoritesTrigger(button);
+                const bool opensMenu = !menuOpen && !pending && !latched &&
+                    button->QJustPressed() && aozoraShortcut && IsGameplayFavoritesContext();
+                if (!latched && !menuOpen && !pending && !opensMenu) {
+                    // In particular, vanilla directions remain byte-for-byte
+                    // unchanged while our menu is closed.
+                    continue;
+                }
+                const auto code = button->idCode;
+                const bool pressed = button->QJustPressed();
+                const bool released = button->QReleased();
+                if (opensMenu) {
+                    LogDPadContext();
+                    Log("EXCLUSIVE_INPUT action=open code=" + std::to_string(code));
+                    FavoritesMenu::Open();
+                } else if (menuOpen && !latched) {
+                    // Deliver the original identity to our UI exactly once,
+                    // before hiding it from native and F4SE key listeners.
+                    FavoritesMenu::HandlePlayerButton(button);
+                }
+                if (released) {
+                    g_exclusiveButtons.erase(key);
+                } else if (pressed || button->QPressed()) {
+                    g_exclusiveButtons.insert(key);
+                }
+                auto* consumed = const_cast<RE::ButtonEvent*>(button);
+                consumed->strUserEvent = RE::BSFixedString("");
+                consumed->idCode = -1;
+                consumed->disabled = true;
+                consumed->value = 0.0F;
+                consumed->heldDownSecs = 0.0F;
+                consumed->handled = RE::InputEvent::HANDLED_RESULT::kStop;
+                if (pressed || released) {
+                    Log("EXCLUSIVE_INPUT action=consume code=" + std::to_string(code) +
+                        " released=" + std::to_string(released));
+                }
+            }
+        }
+
+        void MenuInputProcessingHook(RE::BSInputEventReceiver* a_self, const RE::InputEvent* a_head)
+        {
+            RouteExclusiveButtons(a_head);
+            if (g_originalMenuInputProcessing) {
+                g_originalMenuInputProcessing(a_self, a_head);
+            }
+        }
+
+        void PlayerInputProcessingHook(RE::BSInputEventReceiver* a_self, const RE::InputEvent* a_head)
+        {
+            RouteExclusiveButtons(a_head);
+            if (g_originalPlayerInputProcessing) {
+                g_originalPlayerInputProcessing(a_self, a_head);
+            }
         }
 
         void CloseVanillaFavoritesMenu()
@@ -871,22 +1000,6 @@ namespace Aozora::SWF
             if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
                 queue->AddMessage(RE::BSFixedString("FavoritesMenu"), RE::UI_MESSAGE_TYPE::kHide);
                 Log("VANILLA_MENU_CLOSE queue-hide");
-            }
-        }
-
-        void QueueVanillaFavoritesRefresh()
-        {
-            auto refresh = [] {
-                if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
-                    queue->AddMessage(RE::BSFixedString("FavoritesMenu"),
-                        RE::UI_MESSAGE_TYPE::kInventoryUpdate);
-                    Log("VANILLA_MENU_REFRESH inventory-update");
-                }
-            };
-            if (auto* tasks = F4SE::GetTaskInterface()) {
-                tasks->AddUITask(std::move(refresh));
-            } else {
-                refresh();
             }
         }
 
@@ -915,8 +1028,6 @@ namespace Aozora::SWF
                     "VANILLA_MENU_EVENT opening=true" :
                     "VANILLA_MENU_EVENT opening=false");
                 if (a_event.opening) {
-                    ClearVanillaFavorites();
-                    QueueVanillaFavoritesRefresh();
                     if (g_customOpenRequested.load() || FavoritesMenu::IsOpen()) {
                         CloseVanillaFavoritesMenu();
                     }
@@ -931,13 +1042,37 @@ namespace Aozora::SWF
             RE::BSInputEventUser* a_self,
             const RE::InputEvent* a_event)
         {
-            if (IsDPadDirection(a_event) && IsGameplayFavoritesContext()) {
-                auto* button = const_cast<RE::ButtonEvent*>(a_event->As<RE::ButtonEvent>());
-                const bool justPressed = button && button->QJustPressed();
-                HardBlockGameplayDPad(button);
-                if (justPressed) {
-                    Log("FAVORITES_MANAGER_INPUT dpad blocked=1 originalCalled=0");
+            if (IsDPadDirection(a_event)) {
+                const auto* button = a_event->As<RE::ButtonEvent>();
+                const auto action = DPadActionForInput(
+                    button->QUserEvent().c_str(), button->GetBSButtonCode());
+                // Vanilla mode is an unconditional delegation to the existing
+                // consumer. Our menu state and focus gate must not change it.
+                if (action == DPadInputAction::VanillaFavorites) {
+                    return g_originalFavoritesShouldHandleEvent ?
+                        g_originalFavoritesShouldHandleEvent(a_self, a_event) : false;
                 }
+                if (FavoritesMenu::IsOpen() || g_customOpenRequested.load()) {
+                    return false;
+                }
+                const auto reason = GameplayFavoritesBlockReason();
+                if (button->QJustPressed()) {
+                    LogDPadContext();
+                    Log("DPAD_ROUTE code=" + std::to_string(button->idCode) +
+                        " setting=" + std::to_string(static_cast<unsigned>(action)) +
+                        " context=" + (reason.empty() ? "gameplay" : reason));
+                }
+                if (!reason.empty()) {
+                    // Preserve the existing hook chain, including mods that
+                    // replace the original favorites entry point.
+                    return g_originalFavoritesShouldHandleEvent ?
+                        g_originalFavoritesShouldHandleEvent(a_self, a_event) : false;
+                }
+                if (action == DPadInputAction::AozoraFavorites && button->QJustPressed()) {
+                    FavoritesMenu::Open();
+                }
+                // Only this favorites consumer is suppressed. Do not alter
+                // code, event name, disabled or handled on the shared event.
                 return false;
             }
             if (IsPipboyOpen() && IsQuickkeyButtonEvent(a_event)) {
@@ -956,7 +1091,7 @@ namespace Aozora::SWF
             // Pip-Boy owns its own favorite input path. Preserve that
             // path while replacing the gameplay Favorites action.
             if (IsFavoritesTrigger(a_event) &&
-                (IsGameplayFavoritesContext() || IsVanillaFavoritesOpen())) {
+                (IsGameplayFavoritesContext() || FavoritesMenu::IsOpen())) {
                 const auto* button = a_event->As<RE::ButtonEvent>();
                 if (button && button->QJustPressed()) {
                     Log("VANILLA_MANAGER_BLOCKED input=F/Favorites");
@@ -1006,20 +1141,17 @@ namespace Aozora::SWF
                         "menu-controls");
                     return;
                 }
-                if (a_event && IsDPadDirection(a_event) &&
-                    IsGameplayFavoritesContext()) {
+                if (a_event && IsDPadDirection(a_event)) {
                     const auto action = DPadActionForInput(
                         a_event->QUserEvent().c_str(), a_event->GetBSButtonCode());
-                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
-                    const bool justPressed = a_event->QJustPressed();
-                    HardBlockGameplayDPad(event);
-                    if (justPressed) {
-                        if (action == 2) {
-                            Log("MENU_CONTROLS_CAPTURED input=DPad action=open-custom-menu consumed=1");
-                            FavoritesMenu::Open();
-                        } else {
-                            Log("MENU_CONTROLS_CAPTURED input=DPad action=no-action consumed=1");
-                        }
+                    // Open our menu from the input handler, independently of
+                    // whether the native favorites consumer receives input.
+                    // Preserve the shared event for all other consumers.
+                    if (action == DPadInputAction::AozoraFavorites &&
+                        a_event->QJustPressed() && !FavoritesMenu::IsOpen() &&
+                        !g_customOpenRequested.load() && IsGameplayFavoritesContext()) {
+                        Log("DPAD_OPEN source=menu-controls action=aozora");
+                        FavoritesMenu::Open();
                     }
                     return;
                 }
@@ -1091,13 +1223,11 @@ namespace Aozora::SWF
                 if (FavoritesMenu::IsOpen()) {
                     return IsFavoritesTrigger(button) || IsMenuCloseTrigger(button);
                 }
-                if (IsFavoritesTrigger(button)) {
-                    return IsGameplayFavoritesContext() || IsVanillaFavoritesOpen();
+                if (IsDPadDirection(button)) {
+                    return false;
                 }
-                if (IsDPadDirection(button) && IsGameplayFavoritesContext()) {
-                    // Handle both configured actions here: action 0 is an
-                    // intentional no-op, not a request to pass to vanilla.
-                    return true;
+                if (IsFavoritesTrigger(button)) {
+                    return IsGameplayFavoritesContext();
                 }
                 if (button->device == RE::INPUT_DEVICE::kKeyboard && IsGameplayFavoritesContext()) {
                     const auto slot = HotkeySlotForCode(button->GetBSButtonCode());
@@ -1134,20 +1264,7 @@ namespace Aozora::SWF
                         "player-controls");
                     return;
                 }
-                if (IsDPadDirection(a_event) && IsGameplayFavoritesContext()) {
-                    const auto action = DPadActionForInput(
-                        a_event->QUserEvent().c_str(), a_event->GetBSButtonCode());
-                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
-                    const bool justPressed = a_event->QJustPressed();
-                    HardBlockGameplayDPad(event);
-                    if (justPressed) {
-                        if (action == 2) {
-                            Log("PLAYER_INPUT_CAPTURED input=DPad action=open-custom-menu consumed=1");
-                            FavoritesMenu::Open();
-                        } else {
-                            Log("PLAYER_INPUT_CAPTURED input=DPad action=no-action consumed=1");
-                        }
-                    }
+                if (IsDPadDirection(a_event)) {
                     return;
                 }
                 if (!a_event->QJustPressed()) {
@@ -1162,14 +1279,6 @@ namespace Aozora::SWF
                             Log("PLAYER_INPUT_CAPTURED action=activate-hotkey slot=" + std::to_string(slot));
                         }
                     }
-                    return;
-                }
-                if (IsVanillaFavoritesOpen()) {
-                    CloseVanillaFavoritesMenu();
-                    auto* event = const_cast<RE::ButtonEvent*>(a_event);
-                    event->handled = RE::InputEvent::HANDLED_RESULT::kStop;
-                    Log("PLAYER_INPUT_CAPTURED input=F/Favorites action=replace-already-open-vanilla");
-                    FavoritesMenu::Open();
                     return;
                 }
                 if (!IsGameplayFavoritesContext()) {
@@ -2253,6 +2362,16 @@ namespace Aozora::SWF
     void FavoritesMenu::InstallFavoritesInputHook()
     {
         InstallPipboyNativeInputHook();
+        if (!g_exclusiveInputHookInstalled) {
+            REL::Relocation<std::uintptr_t> menuVtable{ RE::VTABLE::MenuControls[0] };
+            REL::Relocation<std::uintptr_t> playerVtable{ RE::VTABLE::PlayerControls[0] };
+            g_originalMenuInputProcessing = reinterpret_cast<InputProcessing_t>(
+                menuVtable.write_vfunc(0, MenuInputProcessingHook));
+            g_originalPlayerInputProcessing = reinterpret_cast<InputProcessing_t>(
+                playerVtable.write_vfunc(0, PlayerInputProcessingHook));
+            g_exclusiveInputHookInstalled = true;
+            Log("exclusive input hooks installed before MenuControls/PlayerControls dispatch");
+        }
         if (g_favoritesHookInstalled) {
             return;
         }
@@ -2266,7 +2385,12 @@ namespace Aozora::SWF
     void FavoritesMenu::Open()
     {
         Register();
-        if (IsOpen()) {
+        if (IsOpen() || g_customOpenRequested.load()) {
+            return;
+        }
+        const auto reason = GameplayFavoritesBlockReason();
+        if (!reason.empty()) {
+            Log("MENU_OPEN rejected context=" + reason);
             return;
         }
         g_customOpenRequested = true;
@@ -2275,6 +2399,7 @@ namespace Aozora::SWF
             Log("MENU_OPEN queue-show");
             queue->AddMessage(MenuName(), RE::UI_MESSAGE_TYPE::kShow);
         } else {
+            g_customOpenRequested = false;
             Log("MENU_OPEN failed message-queue-missing");
         }
     }

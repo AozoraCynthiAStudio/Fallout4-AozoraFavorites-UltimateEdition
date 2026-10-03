@@ -8,6 +8,12 @@
 
 namespace Aozora::SWF
 {
+    enum class DPadInputAction : std::uint8_t
+    {
+        VanillaFavorites = 0,
+        AozoraFavorites = 1,
+    };
+
     enum class LogLevel : std::uint8_t
     {
         Error = 0,
@@ -180,5 +186,6 @@ namespace Aozora::SWF
     bool ReadMascotEnabled();
     ThemeSettings ReadThemeSettings();
     LayoutSettings ReadLayoutSettings();
-    int DPadActionForInput(std::string_view a_userEvent, RE::BS_BUTTON_CODE a_code);
+    DPadInputAction DPadActionForInput(std::string_view a_userEvent, RE::BS_BUTTON_CODE a_code);
+    void MigrateDPadSettings();
 }

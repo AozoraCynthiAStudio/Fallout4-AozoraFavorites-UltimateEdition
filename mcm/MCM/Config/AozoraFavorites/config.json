@@ -44,28 +44,28 @@
       "type": "dropdown",
       "text": "$AOZORA_MCM_DPAD_UP",
       "help": "$AOZORA_MCM_DPAD_HELP",
-      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_NO_ACTION", "$AOZORA_MCM_OPEN_FAVORITES"] }
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_OPEN_VANILLA_FAVORITES", "$AOZORA_MCM_OPEN_FAVORITES"] }
     },
     {
       "id": "iDPadDownAction:General",
       "type": "dropdown",
       "text": "$AOZORA_MCM_DPAD_DOWN",
       "help": "$AOZORA_MCM_DPAD_HELP",
-      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_NO_ACTION", "$AOZORA_MCM_OPEN_FAVORITES"] }
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_OPEN_VANILLA_FAVORITES", "$AOZORA_MCM_OPEN_FAVORITES"] }
     },
     {
       "id": "iDPadLeftAction:General",
       "type": "dropdown",
       "text": "$AOZORA_MCM_DPAD_LEFT",
       "help": "$AOZORA_MCM_DPAD_HELP",
-      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_NO_ACTION", "$AOZORA_MCM_OPEN_FAVORITES"] }
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_OPEN_VANILLA_FAVORITES", "$AOZORA_MCM_OPEN_FAVORITES"] }
     },
     {
       "id": "iDPadRightAction:General",
       "type": "dropdown",
       "text": "$AOZORA_MCM_DPAD_RIGHT",
       "help": "$AOZORA_MCM_DPAD_HELP",
-      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_NO_ACTION", "$AOZORA_MCM_OPEN_FAVORITES"] }
+      "valueOptions": { "sourceType": "ModSettingInt", "default": 1, "options": ["$AOZORA_MCM_OPEN_VANILLA_FAVORITES", "$AOZORA_MCM_OPEN_FAVORITES"] }
     },
     { "type": "section", "text": "$AOZORA_MCM_SECTION_LIST" },
     {
