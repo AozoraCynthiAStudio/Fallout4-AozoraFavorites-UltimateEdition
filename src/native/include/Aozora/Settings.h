@@ -8,6 +8,17 @@
 
 namespace Aozora::SWF
 {
+    // Reuse one fresh INI image during a synchronous operation. No cache
+    // survives the outer scope, so later MCM edits are read on the next call.
+    class ScopedSettingsRead
+    {
+    public:
+        ScopedSettingsRead();
+        ~ScopedSettingsRead();
+        ScopedSettingsRead(const ScopedSettingsRead&) = delete;
+        ScopedSettingsRead& operator=(const ScopedSettingsRead&) = delete;
+    };
+
     enum class DPadInputAction : std::uint8_t
     {
         VanillaFavorites = 0,

@@ -834,8 +834,13 @@ namespace Aozora::SWF
                 a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kUsesMenuContext) ||
                 a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kPausesGame) ||
                 a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kUsesMovementToDirection);
-            const bool permanentOverlay = a_menu.menuFlags.all(RE::UI_MENU_FLAGS::kAlwaysOpen);
-            return (namedHud || buttonHints || permanentOverlay) && !takesInput;
+            // Transient third-party display layers need not be HUD-named or
+            // AlwaysOpen. Classify them by input ownership instead.
+            // A gameplay context alone does not establish menu interaction.
+            const bool hasInteractiveContext =
+                a_menu.inputContext != RE::UserEvents::INPUT_CONTEXT_ID::kNone &&
+                a_menu.inputContext != RE::UserEvents::INPUT_CONTEXT_ID::kMainGameplay;
+            return !takesInput && (namedHud || buttonHints || !hasInteractiveContext);
         }
 
         bool OtherInteractiveMenuOpen(std::string* a_reason = nullptr)
@@ -854,7 +859,8 @@ namespace Aozora::SWF
                 }
                 if (a_reason) {
                     *a_reason = "menu=" + std::string(menu->menuName.c_str()) +
-                        " flags=" + std::to_string(menu->menuFlags.underlying());
+                        " flags=" + std::to_string(menu->menuFlags.underlying()) +
+                        " input-context=" + std::to_string(menu->inputContext.underlying());
                 }
                 return true;
             }
@@ -905,6 +911,7 @@ namespace Aozora::SWF
                     }
                     snapshot += " [" + std::string(menu->menuName.c_str()) +
                         " flags=" + std::to_string(menu->menuFlags.underlying()) +
+                        " input-context=" + std::to_string(menu->inputContext.underlying()) +
                         " visible=" + std::to_string(menu->IsMenuDisplayEnabled()) +
                         " passive=" + std::to_string(IsPassiveHudMenu(*menu)) + "]";
                 }
@@ -920,6 +927,17 @@ namespace Aozora::SWF
         {
             for (auto* input = a_head; input; input = input->next) {
                 const auto* button = input->As<RE::ButtonEvent>();
+                if (button && button->QJustPressed() && ReadLogLevel() >= static_cast<int>(LogLevel::Debug)) {
+                    const auto reason = GameplayFavoritesBlockReason();
+                    Log("INPUT_DIAGNOSTIC code=" + std::to_string(button->idCode) +
+                        " device=" + std::to_string(button->device.underlying()) +
+                        " raw-event=" + std::string(button->QRawUserEvent().c_str()) +
+                        " disabled=" + std::to_string(button->disabled) +
+                        " favorites=" + std::to_string(IsFavoritesTrigger(button)) +
+                        " dpad=" + std::to_string(IsDPadDirection(button)) +
+                        " context=" + (reason.empty() ? "gameplay" : reason));
+                    LogDPadContext();
+                }
                 if (!button || button->disabled ||
                     button->device == RE::INPUT_DEVICE::kMouse || IsConsoleTrigger(button)) {
                     continue;
@@ -1093,7 +1111,7 @@ namespace Aozora::SWF
             if (IsFavoritesTrigger(a_event) &&
                 (IsGameplayFavoritesContext() || FavoritesMenu::IsOpen())) {
                 const auto* button = a_event->As<RE::ButtonEvent>();
-                if (button && button->QJustPressed()) {
+                if (button && button->QJustPressed() && ReadLogLevel() >= static_cast<int>(LogLevel::Debug)) {
                     Log("VANILLA_MANAGER_BLOCKED input=F/Favorites");
                 }
                 return false;
@@ -1313,6 +1331,17 @@ namespace Aozora::SWF
             }
         }
 
+        struct ScopedMenuProfile
+        {
+            std::string_view phase;
+            ULONGLONG started{ GetTickCount64() };
+            ~ScopedMenuProfile()
+            {
+                Log("MENU_PROFILE phase=" + std::string(phase) +
+                    " ms=" + std::to_string(GetTickCount64() - started));
+            }
+        };
+
         void MixSnapshotHash(std::uint64_t& a_hash, std::uint64_t a_value)
         {
             a_hash ^= a_value + 0x9E3779B97F4A7C15ull +
@@ -1489,6 +1518,8 @@ namespace Aozora::SWF
 
     FavoritesMenu::FavoritesMenu()
     {
+        ScopedMenuProfile profile{ "constructor-swf" };
+        ScopedSettingsRead settingsRead;
         categoryIndex_ = std::min(g_lastCategoryIndex, 3u);
         menuFlags.set(RE::UI_MENU_FLAGS::kModal);
         menuFlags.set(RE::UI_MENU_FLAGS::kUsesMenuContext);
@@ -1972,6 +2003,8 @@ namespace Aozora::SWF
 
     void FavoritesMenu::PushSnapshot()
     {
+        ScopedMenuProfile profile{ "snapshot-total" };
+        ScopedSettingsRead settingsRead;
         if (!uiMovie || !uiMovie->asMovieRoot) {
             return;
         }

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <sstream>
+#include <iterator>
 #include <string>
 #include <utility>
 
@@ -17,6 +19,15 @@ namespace Aozora::SWF
         constexpr std::array<std::string_view, kMascotSeriesCount> MASCOT_SERIES{
             "Chat", "Snack", "Mechanic", "Explorer", "Groom" };
 
+        thread_local unsigned settingsReadDepth = 0;
+        thread_local std::string settingsReadImage;
+
+        std::string ReadSettingsImage()
+        {
+            std::ifstream file(SETTINGS_PATH.data());
+            return { std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+        }
+
         std::string Trim(std::string value)
         {
             const auto left = value.find_first_not_of(" \t\r\n");
@@ -30,10 +41,7 @@ namespace Aozora::SWF
         bool ReadSectionValue(std::string_view sectionName, std::string_view keyName,
             std::string& valueOut)
         {
-            std::ifstream file(SETTINGS_PATH.data());
-            if (!file.is_open()) {
-                return false;
-            }
+            std::istringstream file(settingsReadDepth ? settingsReadImage : ReadSettingsImage());
             std::string section;
             std::string line;
             while (std::getline(file, line)) {
@@ -397,6 +405,21 @@ namespace Aozora::SWF
         return ReadFloatSetting("General", "fSlowMotionScale", 0.0F, 0.0F, 1.0F);
     }
 
+    ScopedSettingsRead::ScopedSettingsRead()
+    {
+        if (settingsReadDepth == 0) {
+            settingsReadImage = ReadSettingsImage();
+        }
+        ++settingsReadDepth;
+    }
+
+    ScopedSettingsRead::~ScopedSettingsRead()
+    {
+        if (--settingsReadDepth == 0) {
+            settingsReadImage.clear();
+        }
+    }
+
     int ReadLogLevel()
     {
         static const int level = ReadIntSetting("iLogLevel", 2, 0, 3);
@@ -446,7 +469,8 @@ namespace Aozora::SWF
             startsWith("PLAYER_INPUT_CAPTURED") || startsWith("INPUT_") ||
             startsWith("NATIVE_") || startsWith("VANILLA_") ||
             startsWith("ICON_LIBRARY") || startsWith("ICON_CLASS") ||
-            startsWith("ALCH_ACTION_TRACE")) {
+            startsWith("ALCH_ACTION_TRACE") || startsWith("DPAD_CONTEXT") ||
+            startsWith("MENU_PROFILE")) {
             return LogLevel::Debug;
         }
         return LogLevel::Info;

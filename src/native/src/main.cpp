@@ -163,7 +163,7 @@ F4SE_PLUGIN_LOAD(const F4SE::LoadInterface* a_interface)
         .trampoline = true,
         .trampolineSize = 128
     });
-    Aozora::SWF::FavoritesMenu::WriteLog("PLUGIN_LOAD build=skyui_like_v1n release=1.0.3 dpad-routing=2mode-v7-press-reset");
+    Aozora::SWF::FavoritesMenu::WriteLog("PLUGIN_LOAD build=skyui_like_v1n release=1.0.4 input-diagnostics=1 dpad-routing=2mode-v7-press-reset hud-gate=input-context-v1");
     if (auto* messaging = F4SE::GetMessagingInterface()) {
         messaging->RegisterListener(MessageHandler);
     }
