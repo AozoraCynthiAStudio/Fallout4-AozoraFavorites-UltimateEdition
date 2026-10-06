@@ -23,6 +23,9 @@
 #include "RE/F/FavoritesManager.h"
 #include "RE/Fallout.h"
 #include "RE/M/Main.h"
+#include "RE/M/MenuTopicManager.h"
+#include "RE/C/ControlMap.h"
+#include "RE/P/PlayerCamera.h"
 #include "RE/M/MenuControls.h"
 #include "RE/M/MenuOpenCloseEvent.h"
 #include "RE/I/INPUT_EVENT_TYPE.h"
@@ -873,6 +876,14 @@ namespace Aozora::SWF
             if (!ui) {
                 return "ui-missing";
             }
+            // Dialogue can remain unpaused and expose passive-looking menu flags.
+            // Never infer dialogue from a lingering speaker/target handle.
+            if (ui->GetMenuOpen(RE::BSFixedString("DialogueMenu"))) {
+                return "dialogue-menu";
+            }
+            if (auto* topics = RE::MenuTopicManager::GetSingleton(); topics && topics->menuOpen) {
+                return "dialogue-active";
+            }
             if (ui->menuMode != 0) {
                 return "ui-menu-mode=" + std::to_string(ui->menuMode);
             }
@@ -882,6 +893,52 @@ namespace Aozora::SWF
             if (auto* controls = RE::PlayerControls::GetSingleton();
                 controls && controls->blockPlayerInput) {
                 return "player-input-blocked";
+            }
+            // HUD widgets can own input without registering another IMenu.
+            // Observe the engine context stack, not only visible menu flags.
+            if (auto* mappings = RE::ControlMap::GetSingleton()) {
+                if (mappings->byTextEntryCount > 0) {
+                    return "text-entry";
+                }
+                for (const auto context : mappings->contextPriorityStack) {
+                    const auto id = context.underlying();
+                    using Context = RE::UserEvents::INPUT_CONTEXT_ID;
+                    switch (static_cast<Context>(id)) {
+                    case Context::kBasicMenuNav:
+                    case Context::kThumbNav:
+                    case Context::kCursor:
+                    case Context::kLThumbCursor:
+                    case Context::kConsole:
+                    case Context::kBook:
+                    case Context::kTFC:
+                    case Context::kLockpick:
+                    case Context::kVATS:
+                    case Context::kVATSPlayback:
+                    case Context::kWorkshop:
+                    case Context::kWorkshopAddendum:
+                    case Context::kRobotModAddendum:
+                    case Context::kSitWait:
+                    case Context::kLooksMenu:
+                    case Context::kPauseMenu:
+                    case Context::kLevelUpMenu:
+                    case Context::kLevelUpMenuPrevNext:
+                    case Context::kMainMenu:
+                    case Context::kQuickContainerMenu:
+                    case Context::kQuickContainerMenuPerk:
+                    case Context::kPlayBinkMenu:
+                    case Context::kCreationClub:
+                        return "active-input-context=" + std::to_string(id);
+                    default:
+                        // Gameplay, virtual controller and scope do not by
+                        // themselves own an interactive selection interface.
+                        break;
+                    }
+                }
+            }
+            // Photo modes/free-camera tools may keep their UI outside menuStack.
+            if (auto* camera = RE::PlayerCamera::GetSingleton();
+                camera && camera->QCameraEquals(RE::CameraState::kFree)) {
+                return "free-camera";
             }
             std::string reason;
             OtherInteractiveMenuOpen(&reason);
@@ -895,6 +952,9 @@ namespace Aozora::SWF
 
         void LogDPadContext()
         {
+            if (ReadLogLevel() < static_cast<int>(LogLevel::Debug)) {
+                return;
+            }
             auto* ui = RE::UI::GetSingleton();
             std::string snapshot = "ui-menu-mode=" + std::to_string(ui ? ui->menuMode : 0);
             if (auto* main = RE::Main::GetSingleton()) {
@@ -1104,6 +1164,14 @@ namespace Aozora::SWF
                         eventName +
                         " pipboyOpen=1 blocked=1 originalCalled=0");
                 }
+                return false;
+            }
+            // Reject only the native favorites consumer in restricted states;
+            // keep the shared numeric key intact for dialogue/text UI handlers.
+            if (const auto* button = a_event ? a_event->As<RE::ButtonEvent>() : nullptr;
+                button && button->device == RE::INPUT_DEVICE::kKeyboard &&
+                HotkeySlotForCode(button->GetBSButtonCode()) < 12 &&
+                !IsGameplayFavoritesContext()) {
                 return false;
             }
             // Pip-Boy owns its own favorite input path. Preserve that

@@ -1,0 +1,7 @@
+# 1.0.5 Test1: interactive HUD and free-camera gate
+
+Shared gameplay gate now blocks active engine input contexts QuickContainerMenu, QuickContainerMenuPerk and TFC, plus the actual free-camera state. This covers interaction ownership not represented by a separate IMenu. Floating Damage classification is unchanged. All closed-menu shortcut entry points, including FavoritesMenu::Open, use the shared gate. The guard only rejects our entry; it does not consume the rejected key or change another mod's context/camera state.
+
+Runtime acceptance pending: (1) corpse/container loot list D-pad stays with looting; (2) look away and favorites works again; (3) Photo Mode F stays in photo mode; (4) exit photo mode and favorites works; (5) floating damage still allows favorites. Test keyboard and gamepad. Exact quick-loot mod name and Photo Mode version are not yet provided; custom implementations bypassing both context stack and free-camera state may require additional integration.
+
+References inspected: CommonLibF4 ControlMap.contextPriorityStack, UserEvents contexts, PlayerCamera.QCameraEquals; vanilla controlmap lists QuickContainer controls separately (https://gist.github.com/ianpatt/e8066afe5dd9d8627a30). FO4 Photo Mode author description identifies pause-menu/hotkey entry (https://www.nexusmods.com/fallout4/mods/49997). No public original Photo Mode constructor/input implementation was found; free-camera detection is a engine-state safeguard, not a claim of inspected Photo Mode source.
